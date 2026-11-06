@@ -146,3 +146,23 @@ def status_cmd():
 
 if __name__ == "__main__":
     app()
+
+
+@app.command("serve")
+def serve_cmd(port: int = 8765, open_browser: bool = typer.Option(True, help="Open the app in the browser")):
+    """Start the app at http://127.0.0.1:<port>."""
+    import webbrowser
+
+    import uvicorn
+
+    from .api import Config, create_app
+    from .sockseek import Sockseek
+
+    data = db_path().parent
+    cfg = Config(library_root=DEFAULT_ROOT, data_dir=data,
+                 rejected_dir=Path.home() / "Desktop" / "soulseek" / "downloads" / "rejected",
+                 sockseek_factory=lambda workdir: Sockseek(workdir=workdir))
+    api = create_app(session_factory(), cfg)
+    if open_browser:
+        webbrowser.open(f"http://127.0.0.1:{port}")
+    uvicorn.run(api, host="127.0.0.1", port=port, log_level="warning")
