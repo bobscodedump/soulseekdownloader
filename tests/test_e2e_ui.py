@@ -166,3 +166,117 @@ def test_spotify_setup_connect_and_import(spotify_server, page):
     assert "Imported tch3 on Spotify: 61 tracks" in msg and "1 already in your library" in msg, msg
     page.screenshot(path=str(SHOTS / "7-spotify-imported.png"), full_page=True)
     assert errors == [], errors
+
+
+@pytest.fixture
+def upgrade_server(tmp_path):
+    import shutil
+    if not shutil.which("ffmpeg"):
+        pytest.skip("needs ffmpeg")
+    from djlib.ingest_csv import TrackRecord, save_playlist
+    from djlib.library import mark_owned, playlist_tracks, sync_library
+    from test_upgrades import RESULTS as UP_RESULTS, TRANSFERS as UP_TRANSFERS, mp3
+    lib = tmp_path / "DJ"
+    mp3(lib / "17102026" / "Funkhaus - Lumen.mp3", 300)
+    mp3(lib / "shranz" / "HEMPTOTE - Selva.mp3", 200)
+    S = session_factory(tmp_path / "t.db")
+    with S() as s:
+        sync_library(s, lib)
+        pl, _ = save_playlist(s, "csv", "p.csv", "set", [TrackRecord("Funkhaus", "Lumen"), TrackRecord("HEMPTOTE", "Selva")])
+        mark_owned(s, playlist_tracks(s, pl.id), lib)
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    cfg = Config(library_root=lib, data_dir=tmp_path / "data", rejected_dir=tmp_path / "rejected",
+                 sockseek_factory=lambda wd: FakeSockseek(wd, UP_RESULTS, UP_TRANSFERS), nicotine_check=lambda: False,
+                 background=False, port=port, replaced_dir=tmp_path / "replaced")
+    srv = uvicorn.Server(uvicorn.Config(create_app(S, cfg), host="127.0.0.1", port=port, log_level="warning"))
+    threading.Thread(target=srv.run, daemon=True).start()
+    while not srv.started:
+        time.sleep(0.05)
+    yield f"http://127.0.0.1:{port}", lib, tmp_path
+    srv.should_exit = True
+
+
+def test_lossless_upgrade_from_the_ui(upgrade_server, page):
+    url, lib, tmp = upgrade_server
+    SHOTS.mkdir(exist_ok=True)
+    errors = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.goto(f"{url}/#upgrades")
+    table = page.get_by_test_id("upgrade-table")
+    table.locator("tbody tr").first.wait_for()
+    assert table.locator("tbody tr").count() == 2
+    page.screenshot(path=str(SHOTS / "9-upgrades.png"), full_page=True)
+
+    page.get_by_test_id("upgrade-all").check()
+    assert page.get_by_test_id("upgrade-run").inner_text() == "Upgrade 2 selected"
+    page.get_by_test_id("upgrade-run").click()
+    page.get_by_test_id("upgrade-msg").wait_for()
+
+    page.get_by_test_id("tab-jobs").click()
+    page.wait_for_function("document.body.innerText.includes('1 upgraded')", timeout=10000)
+    assert "UPGRADED Funkhaus - Lumen" in page.content()
+    page.screenshot(path=str(SHOTS / "10-upgrade-job.png"), full_page=True)
+
+    assert (lib / "17102026" / "05-funkhaus-lumen.wav").exists()
+    assert (tmp / "replaced" / "17102026" / "Funkhaus - Lumen.mp3").exists()
+
+    # Lumen is gone from the list; Selva was checked, so it is hidden until "show already checked".
+    page.get_by_test_id("tab-upgrades").click()
+    page.get_by_text("Nothing to upgrade that hasn't been checked already").wait_for()
+    page.get_by_text("Show already checked (1)").click()
+    page.get_by_text("no search results").wait_for()
+    assert errors == [], errors
+
+
+@pytest.fixture
+def dupes_server(tmp_path):
+    from djlib.fingerprint import fpcalc_path
+    if not fpcalc_path():
+        pytest.skip("needs fpcalc")
+    from test_fingerprint import song, to_mp3, write_wav
+    lib = tmp_path / "DJ"
+    write_wav(lib / "09082026" / "IN FURCHT - FLY LIK3.wav", song(1))
+    to_mp3(lib / "09082026" / "IN FURCHT - FLY LIK3.wav", lib / "16082026" / "A-05 untitled [ms].mp3")
+    write_wav(lib / "techno" / "Other Artist - Different Song.wav", song(2))
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    cfg = Config(library_root=lib, data_dir=tmp_path / "data", rejected_dir=tmp_path / "rejected",
+                 background=False, port=port, duplicates_dir=tmp_path / "dupes")
+    app = create_app(session_factory(tmp_path / "t.db"), cfg)
+    srv = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    threading.Thread(target=srv.run, daemon=True).start()
+    while not srv.started:
+        time.sleep(0.05)
+    yield f"http://127.0.0.1:{port}", lib, tmp_path
+    srv.should_exit = True
+
+
+def test_duplicates_from_the_ui(dupes_server, page):
+    url, lib, tmp = dupes_server
+    SHOTS.mkdir(exist_ok=True)
+    errors = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.goto(url)
+    page.request.post(f"{url}/api/library/scan")
+    page.goto(f"{url}/#duplicates")
+    page.get_by_text("Not checked yet.").wait_for()
+    page.get_by_test_id("dupes-scan").click()
+    page.get_by_test_id("dup-group").wait_for(timeout=15000)
+    group = page.get_by_test_id("dup-group")
+    assert group.locator("tbody tr").count() == 2
+    assert "09082026/IN FURCHT - FLY LIK3.wav" in group.locator("tbody tr").first.inner_text()  # lossless kept by default
+    btn = page.get_by_test_id("dup-resolve")
+    assert btn.inner_text() == "Keep WAV in 09082026, move the other copy out"
+    page.screenshot(path=str(SHOTS / "11-duplicates.png"), full_page=True)
+
+    btn.click()
+    page.get_by_test_id("dupes-none").wait_for()
+    assert "Moved 1 other copy" in page.get_by_test_id("dupes-msg").inner_text()
+    assert (tmp / "dupes" / "16082026" / "A-05 untitled [ms].mp3").exists()
+    assert (lib / "09082026" / "IN FURCHT - FLY LIK3.wav").exists()
+    assert errors == [], errors

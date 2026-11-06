@@ -40,6 +40,15 @@ export interface ExportStatus {
   xml_path: string; m3u_dir: string; exists: boolean; exported_at: string | null; stale: boolean;
   tracks?: number; crates?: Record<string, number>; playlists?: Record<string, { tracks: number; missing: number }>;
 }
+export interface UpgradeRow {
+  file_id: number; track_id: number; artist: string; title: string; version: string | null; crate: string;
+  format: string; bitrate: number | null; duration: number | null; file: string; note: string | null; checked_at: string | null;
+}
+export interface DupFile {
+  file_id: number; path: string; rel: string; crate: string; format: string; bitrate: number | null;
+  duration: number | null; size: number; track: string | null;
+}
+export interface Duplicates { fpcalc: string | null; ran: boolean; duplicates_dir: string; groups: { files: DupFile[]; similarity: number }[] }
 export interface Settings { library_root: string; auto_retry: boolean; rejected_dir: string; sockseek_path: string; sockseek_ok: boolean }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
@@ -80,6 +89,11 @@ export const api = {
   failed: () => req<FailedRow[]>("/api/failed"),
   setStatus: (id: number, status: "retry" | "buy" | "ignored") => req(`/api/tracks/${id}/status`, json("POST", { status })),
   runRetries: () => req<Job>("/api/retries/run", { method: "POST" }),
+  upgrades: () => req<{ replaced_dir: string; rows: UpgradeRow[] }>("/api/upgrades"),
+  startUpgrades: (file_ids: number[], dry_run: boolean) => req<Job>("/api/upgrades", json("POST", { file_ids, dry_run })),
+  duplicates: () => req<Duplicates>("/api/duplicates"),
+  scanDuplicates: () => req<Job>("/api/duplicates/scan", { method: "POST" }),
+  resolveDuplicates: (keep: number, move: number[]) => req<{ moved: string[] }>("/api/duplicates/resolve", json("POST", { keep, move })),
   exportStatus: () => req<ExportStatus>("/api/export"),
   exportNow: () => req<ExportStatus>("/api/export", { method: "POST" }),
   spotify: () => req<SpotifyStatus>("/api/spotify"),

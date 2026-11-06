@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { api, Job } from "../api";
 
 const lineClass = (l: string) =>
-  l.includes("FILED") ? "ok" : l.includes("REJECTED") || l.startsWith("ERROR") ? "bad" : l.startsWith("round") ? "head" : "";
+  l.includes("FILED") || l.includes("UPGRADED") ? "ok" : l.includes("REJECTED") || l.startsWith("ERROR") ? "bad" : l.startsWith("round") ? "head" : "";
 
 export default function Jobs() {
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -68,8 +68,25 @@ export default function Jobs() {
 
 function JobResult({ r }: { r: Record<string, unknown> }) {
   if ("error" in r) return <div className="banner error">{String(r.error)}</div>;
-  if ("plan" in r) return <div className="banner ok">Preview only: nothing was downloaded. {String(r.owned)} already owned.</div>;
   const n = (k: string) => Number(r[k] ?? 0);
+  if ("plan" in r) {
+    const plan = r.plan as { lossless?: number }[];
+    if (plan.length && "lossless" in plan[0]) {
+      const found = plan.filter((p) => (p.lossless ?? 0) > 0).length;
+      return <div className="banner ok">Preview only: lossless copies of the same edit found for {found} of {plan.length} files.</div>;
+    }
+    return <div className="banner ok">Preview only: nothing was downloaded. {String(r.owned)} already owned.</div>;
+  }
+  if ("upgraded" in r) {
+    return (
+      <div className="stats" data-testid="job-result">
+        <div><b>{n("upgraded")}</b> replaced with lossless</div>
+        <div><b>{n("not_found")}</b> not upgraded</div>
+        <div><b>{n("rejected")}</b> wrong files rejected</div>
+        <div className="muted small">Old files moved to {String(r.replaced_dir)}</div>
+      </div>
+    );
+  }
   if ("filed" in r) {
     return (
       <div className="stats" data-testid="job-result">

@@ -5,12 +5,14 @@ import Jobs from "./screens/Jobs";
 import Library from "./screens/Library";
 import Review from "./screens/Review";
 import Failed from "./screens/Failed";
+import Upgrades from "./screens/Upgrades";
+import DuplicatesScreen from "./screens/Duplicates";
 import SettingsScreen from "./screens/Settings";
 
-const TABS = ["playlists", "jobs", "library", "review", "failed", "settings"] as const;
+const TABS = ["playlists", "jobs", "library", "upgrades", "duplicates", "review", "failed", "settings"] as const;
 type Tab = (typeof TABS)[number];
 const LABEL: Record<Tab, string> = {
-  playlists: "Playlists", jobs: "Jobs", library: "Library", review: "Review", failed: "Failed", settings: "Settings",
+  playlists: "Playlists", jobs: "Jobs", library: "Library", upgrades: "Upgrades", duplicates: "Duplicates", review: "Review", failed: "Failed", settings: "Settings",
 };
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
@@ -64,6 +66,8 @@ export default function App() {
         {tab === "playlists" && <Playlists summary={summary} onChange={refresh} />}
         {tab === "jobs" && <Jobs />}
         {tab === "library" && <Library />}
+        {tab === "upgrades" && <Upgrades busy={!!job} onChange={refresh} />}
+        {tab === "duplicates" && <DuplicatesScreen busy={!!job} onChange={refresh} />}
         {tab === "review" && <Review onChange={refresh} />}
         {tab === "failed" && <Failed onChange={refresh} />}
         {tab === "settings" && <SettingsScreen onChange={refresh} />}

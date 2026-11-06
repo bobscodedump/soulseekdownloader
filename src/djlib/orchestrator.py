@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from .db import DownloadAttempt, DownloadJob, Track, TrackStatus, note_failure, now
 from .failures import RETRY_AFTER
 from .library import FileIndex, files_in, record_link, wanted
-from .matcher import MATCH, verify_download
+from .matcher import MATCH, Result, verify_download
 from .ranking import Ranked, rank
 from .reasons import summarize
 from .scanner import index_file, measure_duration
@@ -129,6 +129,53 @@ def run(
         s.commit()
         return rep
 
+    def check(p: TrackPlan, cand: Ranked, local: Path, measured: float | None):
+        return verify_download(wanted(p.track), cand.result.filename, measured)
+
+    def place(p: TrackPlan, cand: Ranked, local: Path) -> Path:
+        t = p.track
+        crate_dir.mkdir(parents=True, exist_ok=True)
+        dest = _unique(crate_dir / local.name)
+        shutil.move(str(local), dest)
+        f = index_file(s, library_root, dest)
+        f.track_id = t.id
+        record_link(s, f, t, "download", 1.0, f"from {cand.result.username}")
+        t.status, t.status_reason, t.next_retry_at = TrackStatus.owned, None, None
+        log(f"  FILED {t.artist} - {t.title} -> {dest.relative_to(library_root)}")
+        return dest
+
+    download_rounds(s, job, plans, ss, rounds, rejected_dir, rep, log, check, place)
+
+    for p in plans:
+        if p.done:
+            continue
+        t = p.track
+        if not p.candidates:
+            t.status = TrackStatus.failed_no_results
+            if p.raw_results == 0:
+                t.status_reason = "No search results"
+            else:
+                top = ", ".join(f"{k} ({v})" for k, v in Counter(p.dropped).most_common(2))
+                t.status_reason = f"no acceptable result among {p.raw_results}: {top}"
+        else:
+            t.status = TrackStatus.failed_transfer
+            t.status_reason = summarize(f"{len(p.attempted)} of {len(p.candidates)} sources tried, all failed: {p.last_failure}")
+        note_failure(t)
+        t.next_retry_at = now() + RETRY_AFTER[t.status]
+        rep.failed.append((t, t.status_reason))
+    job.state, job.finished_at = "finished", now()
+    s.commit()
+    return rep
+
+
+def download_rounds(s: Session, job: DownloadJob, plans: list[TrackPlan], ss: Sockseek, rounds: int,
+                    rejected_dir: Path, rep: Report, log: Callable[[str], None],
+                    check: Callable[[TrackPlan, Ranked, Path, float | None], Result],
+                    place: Callable[[TrackPlan, Ranked, Path], Path], reject_note: str | None = None) -> None:
+    """Download each plan's best untried source, verify it, and place it; failed tracks fall back to the next source.
+
+    check() decides whether a downloaded file is the right one; place() moves it into the library.
+    """
     staging = ss.workdir / "staging"
     bad_users: set[str] = set()
     for rnd in range(1, rounds + 1):
@@ -153,33 +200,12 @@ def run(
         s.commit()
         outcomes = ss.download([c.result for _, c in batch], staging)
         for (p, cand), o in zip(batch, outcomes):
-            _handle(s, job, p, cand, o, crate_dir, library_root, rejected_dir, rep, bad_users, log)
+            _handle(s, job, p, cand, o, rejected_dir, rep, bad_users, log, check, place, reject_note)
         s.commit()
 
-    for p in plans:
-        if p.done:
-            continue
-        t = p.track
-        if not p.candidates:
-            t.status = TrackStatus.failed_no_results
-            if p.raw_results == 0:
-                t.status_reason = "No search results"
-            else:
-                top = ", ".join(f"{k} ({v})" for k, v in Counter(p.dropped).most_common(2))
-                t.status_reason = f"no acceptable result among {p.raw_results}: {top}"
-        else:
-            t.status = TrackStatus.failed_transfer
-            t.status_reason = summarize(f"{len(p.attempted)} of {len(p.candidates)} sources tried, all failed: {p.last_failure}")
-        note_failure(t)
-        t.next_retry_at = now() + RETRY_AFTER[t.status]
-        rep.failed.append((t, t.status_reason))
-    job.state, job.finished_at = "finished", now()
-    s.commit()
-    return rep
 
-
-def _handle(s, job, p: TrackPlan, cand: Ranked, o: DownloadOutcome, crate_dir: Path, library_root: Path,
-            rejected_dir: Path, rep: Report, bad_users: set[str], log) -> None:
+def _handle(s, job, p: TrackPlan, cand: Ranked, o: DownloadOutcome, rejected_dir: Path, rep: Report,
+            bad_users: set[str], log, check, place, reject_note: str | None) -> None:
     t, r = p.track, cand.result
     attempt = DownloadAttempt(job_id=job.id, track_id=t.id, peer=r.username, remote_path=r.filename, result="failed")
     s.add(attempt)
@@ -190,26 +216,19 @@ def _handle(s, job, p: TrackPlan, cand: Ranked, o: DownloadOutcome, crate_dir: P
         bad_users.add(r.username)
         return
     local = Path(o.local_path)
-    measured = measure_duration(local)
-    check = verify_download(wanted(t), r.filename, measured)
-    attempt.verify_score = check.score
-    if check.decision != MATCH:
+    result = check(p, cand, local, measure_duration(local))
+    attempt.verify_score = result.score
+    if result.decision != MATCH:
         rejected_dir.mkdir(parents=True, exist_ok=True)
         parked = _unique(rejected_dir / local.name)
         shutil.move(str(local), parked)
-        attempt.result, attempt.error, attempt.local_path = "rejected", "; ".join(check.reasons), str(parked)
+        attempt.result, attempt.error, attempt.local_path = "rejected", "; ".join(result.reasons), str(parked)
+        attempt.reviewed = reject_note  # None: shown in the review queue
         p.last_failure = f"wrong file rejected ({attempt.error})"
         rep.rejected.append((t, r.filename, attempt.error))
         log(f"  REJECTED {t.artist} - {t.title}: {local.name} ({attempt.error})")
         return
-    crate_dir.mkdir(parents=True, exist_ok=True)
-    dest = _unique(crate_dir / local.name)
-    shutil.move(str(local), dest)
-    f = index_file(s, library_root, dest)
-    f.track_id = t.id
-    record_link(s, f, t, "download", 1.0, f"from {r.username}")
-    t.status, t.status_reason, t.next_retry_at = TrackStatus.owned, None, None
-    attempt.result = "filed"
+    dest = place(p, cand, local)
+    attempt.result, attempt.local_path = "filed", str(dest)
     p.done = True
     rep.filed.append((t, dest))
-    log(f"  FILED {t.artist} - {t.title} -> {dest.relative_to(library_root)}")

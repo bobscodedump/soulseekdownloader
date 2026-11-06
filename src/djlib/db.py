@@ -108,6 +108,10 @@ class File(Base):
     parsed_artist: Mapped[str | None] = mapped_column(String)
     parsed_title: Mapped[str | None] = mapped_column(String)
     seen_at: Mapped[datetime] = mapped_column(default=now)
+    upgrade_checked_at: Mapped[datetime | None]  # last search for a lossless copy of this (lossy) file
+    upgrade_note: Mapped[str | None] = mapped_column(Text)
+    fingerprint: Mapped[str | None] = mapped_column(Text)  # Chromaprint raw, first 120 s, base64 uint32
+    fp_sha1: Mapped[str | None] = mapped_column(String)  # file hash the fingerprint was made from
 
     track: Mapped[Track | None] = relationship(back_populates="files")
     crate: Mapped[Crate | None] = relationship()

@@ -33,6 +33,9 @@ from .orchestrator import run as run_download
 from .retries import MAX_RETRIES, run_due
 from .orchestrator import PreflightError
 from .sockseek import SOCKSEEK, Sockseek, subprocess_runner
+from . import duplicates as dupes_mod
+from .fingerprint import fpcalc_path
+from .upgrades import candidates as upgrade_candidates, run_upgrades
 from .spotify import Spotify, SpotifyError, TokenStore, authorize_url, make_verifier
 
 WEB_DIST = Path(__file__).parent / "web"
@@ -53,6 +56,9 @@ class Config:
     spotify_store: object = None  # TokenStore; None = macOS Keychain
     spotify_http: object = None  # httpx.Client; tests pass a mock transport
     export_dir: Path | None = None  # Rekordbox XML + M3U8; None = data_dir / "exports"
+    replaced_dir: Path | None = None  # MP3s replaced by lossless upgrades; None = data_dir / "replaced"
+    duplicates_dir: Path | None = None  # extra copies moved out of the library; None = data_dir / "duplicates"
+    fpcalc: str | None = "auto"  # Chromaprint fpcalc; "auto" = look on PATH / Homebrew, None = not installed
 
 
 class SettingsIn(BaseModel):
@@ -75,6 +81,16 @@ class SpotifyImportIn(BaseModel):
     url: str
 
 
+class UpgradeIn(BaseModel):
+    file_ids: list[int]
+    dry_run: bool = False
+
+
+class ResolveIn(BaseModel):
+    keep: int
+    move: list[int]
+
+
 class StatusIn(BaseModel):
     status: str  # retry | buy | ignored
 
@@ -83,7 +99,9 @@ def default_config(port: int = 8765) -> Config:
     from .db import db_path
     return Config(library_root=Path.home() / "Desktop" / "DJ", data_dir=db_path().parent,
                   rejected_dir=Path.home() / "Desktop" / "soulseek" / "downloads" / "rejected", port=port,
-                  export_dir=Path.home() / "Desktop" / "soulseek" / "exports")
+                  export_dir=Path.home() / "Desktop" / "soulseek" / "exports",
+                  replaced_dir=Path.home() / "Desktop" / "soulseek" / "downloads" / "replaced",
+                  duplicates_dir=Path.home() / "Desktop" / "soulseek" / "downloads" / "duplicates")
 
 
 def today_crate() -> str:
@@ -116,6 +134,17 @@ def create_app(Session_: sessionmaker[Session], cfg: Config) -> FastAPI:
         return st is None or st.value == "1"
 
     export_dir = cfg.export_dir or cfg.data_dir / "exports"
+    replaced_dir = cfg.replaced_dir or cfg.data_dir / "replaced"
+    duplicates_dir = cfg.duplicates_dir or cfg.data_dir / "duplicates"
+
+    def fpcalc() -> str | None:
+        return fpcalc_path() if cfg.fpcalc == "auto" else cfg.fpcalc
+
+    def dupes_work(log):
+        with Session_() as s:
+            fp = fpcalc() or _missing_fpcalc()
+            found = dupes_mod.find(s, root(s), fp, log=log)
+            return {"groups": len(found), "files": sum(len(g) for g in found)}
     export_lock = threading.Lock()
 
     def do_export(s: Session):
@@ -142,6 +171,19 @@ def create_app(Session_: sessionmaker[Session], cfg: Config) -> FastAPI:
                                      for p in rep.plans], "owned": len(rep.owned_before)}
                 return {"filed": len(rep.filed), "rejected": len(rep.rejected), "failed": len(rep.failed),
                         "owned": len(rep.owned_before), "crate": crate}
+        return work
+
+    def upgrade_work(file_ids: list[int], dry_run: bool):
+        def work(log):
+            with Session_() as s:
+                kwargs = {"is_nicotine_running": cfg.nicotine_check} if cfg.nicotine_check else {}
+                rep = run_upgrades(s, file_ids, root(s), make_sockseek(s), cfg.rejected_dir, replaced_dir,
+                                   dry_run=dry_run, log=log, **kwargs)
+                if dry_run:
+                    return {"plan": [{"track": f"{p.track.artist} - {p.track.title}", "lossless": len(p.candidates)}
+                                     for p in rep.plans]}
+                return {"upgraded": len(rep.upgraded), "not_found": len(rep.not_found), "rejected": rep.rejected,
+                        "replaced_dir": str(replaced_dir)}
         return work
 
     def retry_work(log):
@@ -292,6 +334,37 @@ def create_app(Session_: sessionmaker[Session], cfg: Config) -> FastAPI:
             return {"library_root": str(root(s)), "auto_retry": auto_retry(s), "rejected_dir": str(cfg.rejected_dir),
                     "sockseek_path": str(p), "sockseek_ok": p.is_file() and os.access(p, os.X_OK)}
 
+    @app.get("/api/upgrades")
+    def upgrades():
+        with Session_() as s:
+            return {"replaced_dir": str(replaced_dir), "rows": [{
+                "file_id": c.file.id, "track_id": c.track.id, "artist": c.track.artist, "title": c.track.title,
+                "version": c.track.version, "crate": c.file.crate.name if c.file.crate else "",
+                "format": c.file.format, "bitrate": c.file.bitrate, "duration": c.file.duration_s,
+                "file": Path(c.file.path).name, "note": c.file.upgrade_note,
+                "checked_at": c.file.upgrade_checked_at.isoformat() if c.file.upgrade_checked_at else None,
+            } for c in upgrade_candidates(s, root(s))]}
+
+    @app.get("/api/duplicates")
+    def duplicates():
+        with Session_() as s:
+            gs, sims = dupes_mod.saved(s)
+            ran = s.get(Setting, dupes_mod.KEY) is not None
+            lib = root(s).resolve()
+
+            def row(f: File):
+                t = s.get(Track, f.track_id) if f.track_id else None
+                p = Path(f.path)
+                return {"file_id": f.id, "path": f.path, "rel": str(p.relative_to(lib)) if p.is_relative_to(lib) else f.path,
+                        "crate": f.crate.name if f.crate else "", "format": f.format, "bitrate": f.bitrate,
+                        "duration": f.duration_s, "size": f.size, "track": f"{t.artist} - {t.title}" if t else None}
+
+            return {"fpcalc": fpcalc(), "ran": ran, "duplicates_dir": str(duplicates_dir), "groups": [{
+                "files": [row(f) for f in g],
+                "similarity": min((sims.get(frozenset((a.id, b.id)), 1.0) for a in g for b in g if a.id < b.id
+                                   and frozenset((a.id, b.id)) in sims), default=1.0),
+            } for g in gs]}
+
     @app.get("/api/export")
     def export_status():
         xml = export_dir / XML_NAME
@@ -375,6 +448,38 @@ def create_app(Session_: sessionmaker[Session], cfg: Config) -> FastAPI:
         except RuntimeError as e:
             raise HTTPException(409, str(e))
         return job.view()
+
+    @app.post("/api/upgrades")
+    def start_upgrades(body: UpgradeIn):
+        if not body.file_ids:
+            raise HTTPException(400, "choose at least one file")
+        try:
+            job = runner.submit("upgrade", f"{'Preview' if body.dry_run else 'Find'} lossless copies of "
+                                f"{len(body.file_ids)} file{'s' if len(body.file_ids) != 1 else ''}",
+                                upgrade_work(body.file_ids, body.dry_run))
+        except RuntimeError as e:
+            raise HTTPException(409, str(e))
+        return job.view()
+
+    @app.post("/api/duplicates/scan")
+    def scan_duplicates():
+        if not fpcalc():
+            _missing_fpcalc()
+        try:
+            return runner.submit("duplicates", "Find duplicate audio", dupes_work).view()
+        except RuntimeError as e:
+            raise HTTPException(409, str(e))
+
+    @app.post("/api/duplicates/resolve")
+    def resolve_duplicates(body: ResolveIn):
+        if runner.current:
+            raise HTTPException(409, "wait for the running job to finish")
+        with Session_() as s:
+            try:
+                moved = dupes_mod.move_extras(s, body.keep, body.move, root(s), duplicates_dir)
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+            return {"moved": [str(p) for p in moved]}
 
     @app.post("/api/retries/run")
     def retry_now():
@@ -519,6 +624,10 @@ def _file_version(t: Track | None, f: File) -> str | None:
         rest = strip_length(t.version).strip(" -").title() if t.version else ""
         return f"{have.capitalize()}{' ' + rest if rest else ''} (listed: {t.version or 'Original'})"
     return t.version
+
+
+def _missing_fpcalc():
+    raise HTTPException(400, "Finding duplicates needs Chromaprint's fpcalc. Install it with: brew install chromaprint")
 
 
 def _404(what: str):

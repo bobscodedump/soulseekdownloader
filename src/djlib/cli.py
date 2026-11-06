@@ -159,6 +159,41 @@ def export_cmd(out: Path = typer.Option(Path.home() / "Desktop" / "soulseek" / "
     typer.echo(f"M3U8 playlists: {r.m3u_dir}")
 
 
+@app.command("upgrade")
+def upgrade_cmd(limit: int = typer.Option(10, help="How many files to try"),
+                dry_run: bool = typer.Option(False, "--dry-run", help="Search only; download nothing"),
+                replaced: Path = typer.Option(Path.home() / "Desktop" / "soulseek" / "downloads" / "replaced"),
+                rejected: Path = typer.Option(Path.home() / "Desktop" / "soulseek" / "downloads" / "rejected")):
+    """Replace MP3/M4A files with verified lossless copies of the same edit (old files are moved, not deleted)."""
+    from .sockseek import SOCKSEEK, Sockseek, subprocess_runner
+    from .upgrades import candidates, run_upgrades
+    with session_factory()() as s:
+        r = _root(s, None)
+        todo = [c for c in candidates(s, r) if c.file.upgrade_checked_at is None][:limit]
+        ss = Sockseek(subprocess_runner(SOCKSEEK), db_path().parent / "staging")
+        rep = run_upgrades(s, [c.file.id for c in todo], r, ss, rejected, replaced, dry_run=dry_run, log=typer.echo)
+        for old, new, parked in rep.upgraded:
+            typer.echo(f"  {old.name} -> {new.name}  (old file: {parked})")
+
+
+@app.command("duplicates")
+def duplicates_cmd():
+    """List files with identical audio (Chromaprint fingerprints), whatever their names."""
+    from .duplicates import find
+    from .fingerprint import fpcalc_path
+    fp = fpcalc_path()
+    if not fp:
+        raise typer.Exit("needs fpcalc: brew install chromaprint")
+    with session_factory()() as s:
+        r = _root(s, None)
+        from .db import File
+        for g in find(s, r, fp, log=typer.echo):
+            typer.echo("")
+            for i, fid in enumerate(g):
+                f = s.get(File, fid)
+                typer.echo(f"  {'keep' if i == 0 else 'move'}  {Path(f.path).relative_to(r)}  ({f.format} {f.bitrate or ''}k)")
+
+
 @app.command("serve")
 def serve_cmd(port: int = 8765, open_browser: bool = typer.Option(True, help="Open the app in the browser")):
     """Start the app at http://127.0.0.1:<port>."""
