@@ -85,3 +85,29 @@ def test_untagged_file_still_gets_duration(tmp_path):
     from djlib.scanner import _tags
     t = _tags(p)
     assert t["tag_artist"] is None and t["duration_s"] == 3.0 and t["sample_rate"] == 8000
+
+
+def test_removing_the_linked_copy_relinks_to_the_other_copy(tmp_path):
+    """6 Nov: the track was linked to the copy about to be deleted; the other identical copy must take over."""
+    from djlib.db import Track, TrackStatus
+    from djlib.library import mark_owned, sync_library
+    root = tmp_path / "DJ"
+    (root / "08092026").mkdir(parents=True)
+    (root / "17102026").mkdir()
+    (root / "08092026" / "04 - Alarico - Lost In Time.mp3").write_bytes(b"A" * 3000)
+    (root / "17102026" / "04 - Alarico - Lost In Time.mp3").write_bytes(b"B" * 3000)
+    only = tmp_path / "solo"
+    with session_factory(tmp_path / "t.db")() as s:
+        sync_library(s, root)
+        t = Track(artist="Alarico", title="Lost In Time", norm_key="k")
+        s.add(t)
+        s.commit()
+        mark_owned(s, [t], root)
+        linked = next(f for f in s.scalars(select(File)) if f.track_id == t.id)
+        os.remove(linked.path)
+        st = sync_library(s, root)
+        assert st.reconciled == {"relinked": 1, "wanted": 0} and t.status is TrackStatus.owned
+        assert [f.path for f in t.files] and os.path.exists(t.files[0].path)
+        os.remove(t.files[0].path)
+        st = sync_library(s, root)
+        assert st.reconciled == {"relinked": 0, "wanted": 1} and t.status is TrackStatus.wanted

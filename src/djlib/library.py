@@ -105,6 +105,35 @@ def mark_owned(s: Session, tracks: list[Track], library_root: str | Path) -> dic
     return link(s, dedupe(s, todo, FileIndex(files_in(s, str(library_root)))))
 
 
+def reconcile(s: Session, library_root: str | Path) -> dict[str, int]:
+    """Owned tracks whose file disappeared: relink to another copy if one exists, else back to wanted."""
+    from sqlalchemy import exists
+    orphans = list(s.scalars(select(Track).where(Track.status == TrackStatus.owned, ~exists().where(File.track_id == Track.id))))
+    out = {"relinked": 0, "wanted": 0}
+    if not orphans:
+        return out
+    index = FileIndex(files_in(s, str(library_root)))
+    for t in orphans:
+        r, f = index.best(t)
+        if r.decision == MATCH and f:
+            f.track_id = t.id
+            record_link(s, f, t, AUTO, r.score, "relinked after the linked file was removed")
+            out["relinked"] += 1
+        else:
+            t.status, t.status_reason = TrackStatus.wanted, "file removed from the library"
+            out["wanted"] += 1
+    s.commit()
+    return out
+
+
+def sync_library(s: Session, library_root: str | Path):
+    """Scan the folder, then fix tracks whose files went away. Use this instead of a bare scan."""
+    from .scanner import scan
+    st = scan(s, library_root)
+    st.reconciled = reconcile(s, library_root)
+    return st
+
+
 def playlist_tracks(s: Session, playlist_id: int) -> list[Track]:
     q = (select(Track).join(PlaylistItem, PlaylistItem.track_id == Track.id)
          .where(PlaylistItem.playlist_id == playlist_id).order_by(PlaylistItem.position))

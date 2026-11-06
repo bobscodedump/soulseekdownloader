@@ -10,7 +10,7 @@ export interface Job {
 }
 export interface Summary {
   library_root: string; files: number; tracks: Partial<Record<Status, number>>; review: number;
-  today_crate: string; current_job: Job | null; auto_retry: boolean;
+  today_crate: string; current_job: Job | null; auto_retry: boolean; background_error: string | null;
 }
 export interface PlaylistRow {
   id: number; name: string; crate: string | null; source: string; imported_at: string;

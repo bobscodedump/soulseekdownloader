@@ -59,6 +59,7 @@ export default function App() {
         </div>
       </header>
       {error && <div className="banner error">Can't reach the app server: {error}</div>}
+      {summary?.background_error && <div className="banner error">Background library scan failed: {summary.background_error}</div>}
       <main>
         {tab === "playlists" && <Playlists summary={summary} onChange={refresh} />}
         {tab === "jobs" && <Jobs />}

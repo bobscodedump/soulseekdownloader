@@ -1,6 +1,7 @@
 """Local HTTP API and web UI. Run: `djlib serve` (http://127.0.0.1:8765)."""
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections import Counter
@@ -21,12 +22,11 @@ from . import review as review_mod
 from .db import Crate, File, Playlist, Setting, Track, TrackStatus, now
 from .ingest_csv import import_csv
 from .jobs import JobRunner
-from .library import mark_owned, playlist_tracks
+from .library import mark_owned, playlist_tracks, sync_library
 from .normalize import length_class, strip_length
 from .reasons import summarize
 from .orchestrator import run as run_download
 from .retries import MAX_RETRIES, run_due
-from .scanner import scan
 from .sockseek import Sockseek
 
 WEB_DIST = Path(__file__).parent / "web"
@@ -118,15 +118,16 @@ def create_app(Session_: sessionmaker[Session], cfg: Config) -> FastAPI:
                 continue
             try:
                 with Session_() as s:
-                    scan(s, root(s))
+                    sync_library(s, root(s))
                     if auto_retry(s) and time.time() - last_retry > cfg.retry_check_every_s:
                         last_retry = time.time()
                         from .retries import due
                         groups, _, _ = due(s)
                         if groups:
                             runner.submit("retry", "Scheduled retry", retry_work)
-            except Exception:
-                pass
+            except Exception as e:  # keep the loop alive, but never hide the problem
+                app.state.background_error = f"{datetime.now():%H:%M} {type(e).__name__}: {e}"
+                logging.getLogger("djlib").exception("background scan/retry failed")
 
     if cfg.background:
         threading.Thread(target=background, daemon=True).start()
@@ -142,6 +143,7 @@ def create_app(Session_: sessionmaker[Session], cfg: Config) -> FastAPI:
                 "tracks": {k.value: v for k, v in by_status.items()},
                 "review": len(review_mod.items(s)), "today_crate": today_crate(),
                 "current_job": cur.view() if cur else None, "auto_retry": auto_retry(s),
+                "background_error": getattr(app.state, "background_error", None),
             }
 
     @app.get("/api/crates")
@@ -251,7 +253,7 @@ def create_app(Session_: sessionmaker[Session], cfg: Config) -> FastAPI:
     @app.post("/api/library/scan")
     def scan_now():
         with Session_() as s:
-            st = scan(s, root(s))
+            st = sync_library(s, root(s))
             return {"seen": st.seen, "added": st.added, "moved": st.moved, "removed": st.removed,
                     "needs_tags": len(st.no_artist_title)}
 

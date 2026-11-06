@@ -8,10 +8,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import mutagen
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from .db import Crate, CrateKind, File, now
+from .db import Crate, CrateKind, File, MatchLink, now
 
 AUDIO = {".mp3", ".flac", ".wav", ".aif", ".aiff", ".m4a", ".ogg", ".opus"}
 _CHUNK = 1 << 20
@@ -169,6 +169,8 @@ def scan(s: Session, root: Path | str) -> ScanStats:
         f.crate = crate_for(s, root, p)
 
     for f in vanished.values():
+        # Its match records point at a file that no longer exists; the track is re-checked by reconcile().
+        s.execute(delete(MatchLink).where(MatchLink.file_id == f.id))
         s.delete(f)
         st.removed += 1
     s.flush()

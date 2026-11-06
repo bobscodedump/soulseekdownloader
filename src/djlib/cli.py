@@ -8,9 +8,8 @@ from sqlalchemy import func, select
 
 from .db import Setting, Track, TrackStatus, db_path, session_factory
 from .ingest_csv import import_csv
-from .library import FileIndex, dedupe, files_in, link, playlist_tracks
+from .library import FileIndex, dedupe, files_in, link, playlist_tracks, sync_library
 from .matcher import MATCH, REVIEW
-from .scanner import scan
 
 app = typer.Typer(help="DJ library manager", no_args_is_help=True)
 DEFAULT_ROOT = Path.home() / "Desktop" / "DJ"
@@ -30,7 +29,7 @@ def scan_cmd(root: Path = typer.Argument(None, help="DJ folder (remembered after
     """Scan the DJ folder into the database (read-only)."""
     with session_factory()() as s:
         r = _root(s, root)
-        st = scan(s, r)
+        st = sync_library(s, r)
         typer.echo(f"{r}: {st.seen} files ({st.added} new, {st.updated} changed, {st.moved} moved, "
                    f"{st.removed} removed, {st.unchanged} unchanged)")
         if st.no_artist_title:
