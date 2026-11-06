@@ -32,6 +32,7 @@ class Candidate:
     name: str  # filename stem, or "artist - title" from tags
     context: str = ""  # parent folders / full remote path, searched for the artist
     duration_s: float | None = None
+    artist: str | None = None  # an explicit artist (tags or parsed name), when the file states one
 
 
 @dataclass
@@ -77,7 +78,7 @@ def _version_ok(w: Wanted, name: str) -> tuple[bool, str | None]:
 def match(w: Wanted, c: Candidate) -> Result:
     """Is this candidate file the wanted track? Used for dedupe against the library."""
     ts = _title_score(w.base_title, c.name)
-    as_ = max(_artist_score(w.artist, c.name), _artist_score(w.artist, c.context))
+    as_ = max(_artist_score(w.artist, c.name), _artist_score(w.artist, c.context), _artist_score(w.artist, c.artist or ""))
     score = 0.65 * ts + 0.35 * as_
     reasons = []
     vok, vwhy = _version_ok(w, c.name)
@@ -90,7 +91,13 @@ def match(w: Wanted, c: Candidate) -> Result:
         if not dur_ok:
             reasons.append(f"duration off by {diff:.0f}s")
 
-    if ts >= 0.9 and as_ >= 0.5 and vok and dur_ok is not False:
+    # The file names its own artist and none of ours is in it: a different song with a similar title.
+    other_artist = bool(c.artist) and as_ < 0.5 and _artist_score(w.artist, c.artist) == 0
+    # Numbers in a title name the song ("SKETCH #14" is not "SKETCH #6"): all must be present.
+    wrong_number = bool({x for x in tokens(w.base_title) if x.isdigit()} - set(words(c.name)))
+    if other_artist or wrong_number:
+        decision = NO_MATCH
+    elif ts >= 0.9 and as_ >= 0.5 and vok and dur_ok is not False:
         decision = MATCH
     elif ts >= 0.75 and (as_ >= 0.5 or dur_ok):
         decision = REVIEW

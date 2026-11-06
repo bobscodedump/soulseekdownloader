@@ -95,3 +95,25 @@ def test_split_artists_and_norm_key():
 
 def test_parse_duration():
     assert parse_duration("05:11") == 311 and parse_duration("1:04:35") == 3875 and parse_duration("") is None
+
+
+def test_tagged_other_artist_never_matches_even_with_same_length():
+    """Sciahri - Two Letters vs a Half Life & BCCO file whose length happened to match (326 vs 325 s)."""
+    w = Wanted("Sciahri", "Two Letters", duration_s=326)
+    c = Candidate(name="Half Life & Bcco Letters To God (Original Mix) 08_half_life_and_bcco_-_letters_to_god_(original_mix)",
+                  context="05112026", duration_s=325.2, artist="Half Life & Bcco")
+    assert match(w, c).decision == NO_MATCH
+
+
+def test_tags_supply_the_artist_when_filename_lacks_it():
+    """Alarico - Lost In Time: file '04 - Lost In Time.flac' is only identifiable by its tags."""
+    w = Wanted("Alarico", "Lost In Time", duration_s=291)
+    c = Candidate(name="Alarico Lost in Time 04 - Lost In Time", context="08092026", duration_s=291.67, artist="Alarico")
+    assert match(w, c).decision == MATCH
+
+
+def test_numbered_titles_must_match_their_number():
+    w = Wanted("Tarkno, Remco Beekwilder", "SKETCH #14 - Original Mix", duration_s=330)
+    assert match(w, cand("17102026/06.SKETCH #6 (Original Mix).mp3", duration=312)).decision == NO_MATCH
+    w6 = Wanted("Tarkno, Remco Beekwilder", "SKETCH #6 - Original Mix")
+    assert match(w6, Candidate(name="06.SKETCH #6 (Original Mix)", artist="Tarkno & Remco Beekwilder")).decision == MATCH
