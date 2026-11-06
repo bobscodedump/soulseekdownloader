@@ -15,13 +15,31 @@ CSV = ("  #,Song,Artist,Duration\n"
        '99,"Never Logged","Nobody",04:00\n')
 
 
-def test_parse_logs_keeps_last_reason_and_counts_runs(tmp_path):
-    a, b = tmp_path / "a.log", tmp_path / "b.log"
+def test_parse_logs_keeps_last_reason_and_counts_failed_days(tmp_path):
+    import os
+    a, b, c = tmp_path / "a.log", tmp_path / "b.log", tmp_path / "c.log"
     a.write_text(LOG)
     b.write_text(LOG2)
-    last, runs = parse_logs([a, b])
-    assert last["DAMIANO (DE) - Selftalk"] == "No search results" and runs["DAMIANO (DE) - Selftalk"] == 2
+    c.write_text(LOG2)
+    os.utime(a, (1_792_200_000, 1_792_200_000))  # 17 Oct 2026
+    os.utime(b, (1_792_210_000, 1_792_210_000))  # same day, a few hours later
+    os.utime(c, (1_794_000_000, 1_794_000_000))  # 6 Nov 2026 (UTC)
+    last, days, latest = parse_logs([c, a, b])
+    assert last["DAMIANO (DE) - Selftalk"] == "No search results"
+    assert days["DAMIANO (DE) - Selftalk"] == 2  # three runs, two days
+    assert latest["DAMIANO (DE) - Selftalk"].date().isoformat() == "2026-11-06"
     assert "tch" not in last  # job-list summary lines are not tracks
+
+
+def test_note_failure_counts_once_per_day():
+    from datetime import datetime, timezone
+    from djlib.db import Track, note_failure
+    t = Track(artist="a", title="b", norm_key="k", retry_count=0)
+    d1 = datetime(2026, 11, 6, 9, tzinfo=timezone.utc)
+    note_failure(t, d1)
+    note_failure(t, d1.replace(hour=17))
+    note_failure(t, datetime(2026, 11, 7, 9, tzinfo=timezone.utc))
+    assert t.retry_count == 2
 
 
 def test_status_for():

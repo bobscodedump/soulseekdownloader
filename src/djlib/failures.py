@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy.orm import Session
@@ -23,21 +23,23 @@ def status_for(reason: str) -> TrackStatus:
     return TrackStatus.failed_transfer
 
 
-def parse_logs(paths: list[Path]) -> tuple[dict[str, str], Counter]:
-    """'Artist - Title' -> last failure reason, plus how many runs each failed in."""
-    last, runs = {}, Counter()
-    for p in paths:
+def parse_logs(paths: list[Path]) -> tuple[dict[str, str], Counter, dict[str, datetime]]:
+    """'Artist - Title' -> last failure reason, days it failed on (by log date), and the last such date."""
+    last, days, latest = {}, {}, {}
+    for p in sorted(paths, key=lambda p: Path(p).stat().st_mtime):
+        when = datetime.fromtimestamp(Path(p).stat().st_mtime, timezone.utc)
         for line in Path(p).read_text(errors="replace").splitlines():
             m = _FAILED.search(line)
             if m and m["reason"] != "Child jobs failed":
                 last[m["what"]] = m["reason"]
-                runs[m["what"]] += 1
-    return last, runs
+                days.setdefault(m["what"], set()).add(when.date())
+                latest[m["what"]] = when
+    return last, Counter({k: len(v) for k, v in days.items()}), latest
 
 
 def import_failures(s: Session, csv_path: Path, logs: list[Path], overrides: dict[str, str] | None = None) -> Counter:
     """Mark every track in a still-failing CSV as failed, with its reason and next retry time."""
-    reasons, runs = parse_logs(logs)
+    reasons, runs, latest = parse_logs(logs)
     overrides = overrides or {}
     pl, _ = import_csv(s, csv_path)
     out = Counter()
@@ -52,6 +54,7 @@ def import_failures(s: Session, csv_path: Path, logs: list[Path], overrides: dic
         t.status = status
         t.status_reason = reason or "unknown (no log line found)"
         t.retry_count = max(t.retry_count or 0, next((runs[k] for k in candidates if k in runs), 0))
+        t.last_failed_at = next((latest[k] for k in candidates if k in latest), t.last_failed_at)
         t.next_retry_at = now() + RETRY_AFTER[status]
         out[status.value] += 1
     s.commit()

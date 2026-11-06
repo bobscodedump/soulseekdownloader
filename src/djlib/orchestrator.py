@@ -10,7 +10,7 @@ from typing import Callable
 
 from sqlalchemy.orm import Session
 
-from .db import DownloadAttempt, DownloadJob, Track, TrackStatus, now
+from .db import DownloadAttempt, DownloadJob, Track, TrackStatus, note_failure, now
 from .failures import RETRY_AFTER
 from .library import FileIndex, files_in, record_link, wanted
 from .matcher import MATCH, verify_download
@@ -169,7 +169,7 @@ def run(
         else:
             t.status = TrackStatus.failed_transfer
             t.status_reason = f"{len(p.attempted)} of {len(p.candidates)} sources tried, all failed: {p.last_failure}"
-        t.retry_count = (t.retry_count or 0) + 1
+        note_failure(t)
         t.next_retry_at = now() + RETRY_AFTER[t.status]
         rep.failed.append((t, t.status_reason))
     job.state, job.finished_at = "finished", now()
@@ -194,8 +194,9 @@ def _handle(s, job, p: TrackPlan, cand: Ranked, o: DownloadOutcome, crate_dir: P
     attempt.verify_score = check.score
     if check.decision != MATCH:
         rejected_dir.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(local), _unique(rejected_dir / local.name))
-        attempt.result, attempt.error = "rejected", "; ".join(check.reasons)
+        parked = _unique(rejected_dir / local.name)
+        shutil.move(str(local), parked)
+        attempt.result, attempt.error, attempt.local_path = "rejected", "; ".join(check.reasons), str(parked)
         p.last_failure = f"wrong file rejected ({attempt.error})"
         rep.rejected.append((t, r.filename, attempt.error))
         log(f"  REJECTED {t.artist} - {t.title}: {local.name} ({attempt.error})")

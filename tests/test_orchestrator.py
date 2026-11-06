@@ -119,6 +119,8 @@ def test_full_run(env):
     # Obsessed: the file lied about its length; measured 120 s -> rejected, never filed.
     assert by["Obsessed"].status is TrackStatus.failed_transfer
     assert (tmp / "rejected" / "KUSS & GRUV - Obsessed.flac").exists()
+    rej = s.scalar(select(DownloadAttempt).where(DownloadAttempt.result == "rejected"))
+    assert rej.local_path == str((tmp / "rejected" / "KUSS & GRUV - Obsessed.flac").resolve())
     assert not (lib / "06112026" / "KUSS & GRUV - Obsessed.flac").exists()
     assert "wrong file rejected" in by["Obsessed"].status_reason
     # Selva: nothing found.

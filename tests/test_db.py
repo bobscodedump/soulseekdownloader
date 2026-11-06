@@ -23,3 +23,20 @@ def test_track_file_roundtrip(tmp_path):
         t = s.query(Track).one()
         assert t.status is TrackStatus.wanted
         assert [f.path for f in t.files] == ["/x/tanoo.flac"]
+
+
+def test_existing_database_gains_new_columns(tmp_path):
+    """A database created before a column existed is upgraded in place, keeping its rows."""
+    import sqlite3
+    path = tmp_path / "old.db"
+    con = sqlite3.connect(path)
+    con.execute("CREATE TABLE playlist (id INTEGER PRIMARY KEY, name VARCHAR, source VARCHAR, source_ref VARCHAR UNIQUE, imported_at DATETIME)")
+    con.execute("INSERT INTO playlist VALUES (1, 'tch', 'csv', '/x.csv', '2026-10-17')")
+    con.commit()
+    con.close()
+    from djlib.db import Playlist
+    with session_factory(path)() as s:
+        p = s.get(Playlist, 1)
+        assert p.name == "tch" and p.crate is None
+        p.crate = "17102026"
+        s.commit()

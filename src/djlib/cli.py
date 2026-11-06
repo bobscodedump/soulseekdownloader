@@ -89,6 +89,8 @@ def download_cmd(
     with session_factory()() as s:
         root = _root(s, None)
         pl, _ = import_csv(s, csv_path)
+        pl.crate = crate
+        s.commit()
         try:
             rep = run(s, playlist_tracks(s, pl.id), root, crate, Sockseek(workdir=workdir), rejected,
                       rounds=rounds, dry_run=dry_run, log=typer.echo)

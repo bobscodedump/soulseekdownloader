@@ -21,6 +21,15 @@ def now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def note_failure(t: "Track", at: datetime | None = None) -> None:
+    """Count a failure once per day: same-day retries mostly hit the same peer quotas."""
+    at = at or now()
+    last = t.last_failed_at.replace(tzinfo=timezone.utc) if t.last_failed_at and t.last_failed_at.tzinfo is None else t.last_failed_at
+    if last is None or last.date() != at.date():
+        t.retry_count = (t.retry_count or 0) + 1
+    t.last_failed_at = at
+
+
 class TrackStatus(str, enum.Enum):
     wanted = "wanted"
     queued = "queued"
@@ -65,7 +74,8 @@ class Track(Base):
     status: Mapped[TrackStatus] = mapped_column(Enum(TrackStatus), default=TrackStatus.wanted, index=True)
     status_reason: Mapped[str | None] = mapped_column(Text)
     next_retry_at: Mapped[datetime | None]
-    retry_count: Mapped[int] = mapped_column(Integer, default=0)
+    retry_count: Mapped[int] = mapped_column(Integer, default=0)  # days with a failed attempt, not runs
+    last_failed_at: Mapped[datetime | None]
     norm_key: Mapped[str] = mapped_column(String, index=True)
     created_at: Mapped[datetime] = mapped_column(default=now)
 
@@ -110,6 +120,7 @@ class Playlist(Base):
     source: Mapped[str] = mapped_column(String)  # "csv" | "spotify"
     source_ref: Mapped[str] = mapped_column(String, unique=True)
     imported_at: Mapped[datetime] = mapped_column(default=now)
+    crate: Mapped[str | None] = mapped_column(String)  # where this playlist's downloads (and retries) are filed
 
 
 class PlaylistItem(Base):
@@ -144,6 +155,8 @@ class DownloadAttempt(Base):
     result: Mapped[str] = mapped_column(String)
     error: Mapped[str | None] = mapped_column(Text)
     verify_score: Mapped[float | None] = mapped_column(Float)
+    local_path: Mapped[str | None] = mapped_column(Text)  # where a rejected file was parked, for review
+    reviewed: Mapped[str | None] = mapped_column(String)  # accepted | dismissed, once a person decided
     at: Mapped[datetime] = mapped_column(default=now)
 
 
@@ -181,7 +194,22 @@ def make_engine(path: Path | str | None = None):
         cur.close()
 
     Base.metadata.create_all(engine)
+    _add_missing_columns(engine)
     return engine
+
+
+def _add_missing_columns(engine) -> None:
+    """Additive schema upgrades: new nullable columns are added to existing databases in place."""
+    from sqlalchemy import inspect, text
+    insp = inspect(engine)
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            have = {c["name"] for c in insp.get_columns(table.name)}
+            for col in table.columns:
+                if col.name not in have:
+                    if not col.nullable:
+                        raise RuntimeError(f"cannot auto-add non-nullable column {table.name}.{col.name}")
+                    conn.execute(text(f'ALTER TABLE {table.name} ADD COLUMN "{col.name}" {col.type.compile(engine.dialect)}'))
 
 
 def session_factory(path: Path | str | None = None) -> sessionmaker[Session]:
