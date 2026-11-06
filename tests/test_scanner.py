@@ -111,3 +111,22 @@ def test_removing_the_linked_copy_relinks_to_the_other_copy(tmp_path):
         os.remove(t.files[0].path)
         st = sync_library(s, root)
         assert st.reconciled == {"relinked": 0, "wanted": 1} and t.status is TrackStatus.wanted
+
+
+def test_one_file_owning_two_tracks_is_stable_across_rescans(tmp_path):
+    """Join Me - Extended Schranz Rework owns both the rework and the extended rework; rescans must not flip it."""
+    from djlib.db import Track, TrackStatus
+    from djlib.library import mark_owned, sync_library
+    root = tmp_path / "DJ"
+    (root / "shranz").mkdir(parents=True)
+    (root / "shranz" / "Lightforce, KSN - Join Me - Extended Schranz Rework.mp3").write_bytes(b"A" * 3000)
+    with session_factory(tmp_path / "t.db")() as s:
+        sync_library(s, root)
+        a = Track(artist="Lightforce, KSN", title="Join Me", version="Schranz Rework", norm_key="a")
+        b = Track(artist="Lightforce, KSN", title="Join Me", version="Extended Schranz Rework", norm_key="b")
+        s.add_all([a, b])
+        s.commit()
+        mark_owned(s, [a, b], root)
+        assert a.status is TrackStatus.owned and b.status is TrackStatus.owned
+        for _ in range(3):
+            assert sync_library(s, root).reconciled == {"relinked": 0, "wanted": 0}

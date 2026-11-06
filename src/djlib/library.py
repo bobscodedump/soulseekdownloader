@@ -13,6 +13,7 @@ from .matcher import MATCH, NO_MATCH, REVIEW, Candidate, Result, Wanted, match
 from .normalize import tokens
 
 AUTO, PENDING_REVIEW = "fuzzy", "fuzzy_review"
+OWNING_METHODS = (AUTO, "manual", "download")  # match links that mean "this file is that track"
 
 
 def candidate(f: File) -> Candidate:
@@ -108,7 +109,11 @@ def mark_owned(s: Session, tracks: list[Track], library_root: str | Path) -> dic
 def reconcile(s: Session, library_root: str | Path) -> dict[str, int]:
     """Owned tracks whose file disappeared: relink to another copy if one exists, else back to wanted."""
     from sqlalchemy import exists
-    orphans = list(s.scalars(select(Track).where(Track.status == TrackStatus.owned, ~exists().where(File.track_id == Track.id))))
+    # One file can satisfy several tracks (an extended rework owns the plain rework too), so ownership is
+    # any confirmed match link to an existing file, not only File.track_id.
+    has_file = exists().where(File.track_id == Track.id)
+    has_link = exists().where(MatchLink.track_id == Track.id, MatchLink.method.in_(OWNING_METHODS))
+    orphans = list(s.scalars(select(Track).where(Track.status == TrackStatus.owned, ~has_file, ~has_link)))
     out = {"relinked": 0, "wanted": 0}
     if not orphans:
         return out
@@ -116,7 +121,8 @@ def reconcile(s: Session, library_root: str | Path) -> dict[str, int]:
     for t in orphans:
         r, f = index.best(t)
         if r.decision == MATCH and f:
-            f.track_id = t.id
+            if f.track_id is None:
+                f.track_id = t.id
             record_link(s, f, t, AUTO, r.score, "relinked after the linked file was removed")
             out["relinked"] += 1
         else:
