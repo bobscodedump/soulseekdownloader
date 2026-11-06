@@ -43,6 +43,10 @@ TRANSFERS = {
 def env(tmp_path):
     lib = tmp_path / "DJ"
     mp3(lib / "17102026" / "Funkhaus - Lumen.mp3", 300)
+    from mutagen.easyid3 import EasyID3
+    tags = EasyID3()
+    tags.update({"artist": "Funkhaus", "title": "Lumen", "organization": "Teletech"})
+    tags.save(lib / "17102026" / "Funkhaus - Lumen.mp3")
     mp3(lib / "shranz" / "HEMPTOTE - Selva.mp3", 200)
     mp3(lib / "shranz" / "SOLYD - Hot Beats.mp3", 240)
     wav(lib / "techno" / "SOLYD - Hot Beats.wav", 240)  # already has a lossless copy
@@ -82,6 +86,11 @@ def test_upgrade_replaces_mp3_and_keeps_the_old_file(env):
     assert not old.exists() and parked == (tmp / "replaced" / "17102026" / "Funkhaus - Lumen.mp3").resolve()
     assert parked.exists()  # moved, never deleted
 
+    # The untagged WAV got the old file's tags, and its audio is untouched.
+    import mutagen
+    w = mutagen.File(new)
+    assert str(w.tags["TPE1"]) == "Funkhaus" and str(w.tags["TPUB"]) == "Teletech"
+    assert abs(w.info.length - 300.6) < 0.01
     t = by_title(s)["Lumen"]
     assert t.status is TrackStatus.owned and t.bpm == 140
     files = s.scalars(select(File).where(File.track_id == t.id)).all()

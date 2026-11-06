@@ -24,6 +24,7 @@ from .scanner import index_file
 from .sockseek import Query, Sockseek
 
 LOSSY = {"mp3", "m4a", "ogg", "opus"}
+COPY_TAGS = ("artist", "title", "album", "genre", "date", "organization", "isrc", "bpm")
 REJECT_NOTE = "upgrade check"  # rejected upgrade downloads stay parked but are not put in the review queue
 
 
@@ -90,6 +91,62 @@ def plan_sources(w: Wanted, owned_s: float, results) -> tuple[list[Ranked], dict
     return keep, dropped
 
 
+def copy_tags(old: Path, new: Path) -> list[str]:
+    """Give an untagged lossless download (WAVs usually are) the tags of the file it replaces.
+
+    Written to a temporary copy first; the download is only swapped for it if it still reads back intact.
+    """
+    import os
+
+    import mutagen
+    from mutagen.aiff import AIFF
+    from mutagen.id3 import TALB, TBPM, TCON, TDRC, TIT2, TPE1, TPUB, TSRC
+    from mutagen.wave import WAVE
+    frames = {"artist": TPE1, "title": TIT2, "album": TALB, "genre": TCON, "date": TDRC,
+              "organization": TPUB, "isrc": TSRC, "bpm": TBPM}
+    try:
+        src = mutagen.File(old, easy=True)
+        vals = {k: [str(x) for x in src.tags[k]] for k in COPY_TAGS if src and src.tags and k in src.tags}
+        if not vals:
+            return []
+        before = mutagen.File(new)
+        if before is None:
+            return []
+        tmp = new.with_name(new.name + ".tagging")
+        shutil.copy2(new, tmp)
+        if isinstance(before, (WAVE, AIFF)):
+            dst = mutagen.File(tmp)
+            if dst.tags is None:
+                dst.add_tags()
+            if dst.tags.getall("TPE1") or dst.tags.getall("TIT2"):
+                tmp.unlink()
+                return []
+            for k, v in vals.items():
+                dst.tags.add(frames[k](encoding=3, text=v))
+        else:
+            dst = mutagen.File(tmp, easy=True)
+            if dst.tags is None:
+                dst.add_tags()
+            if dst.tags.get("artist") or dst.tags.get("title"):
+                tmp.unlink()
+                return []
+            for k, v in list(vals.items()):
+                try:
+                    dst.tags[k] = v
+                except (KeyError, ValueError):
+                    vals.pop(k)
+        dst.save()
+        check = mutagen.File(tmp)
+        if check is None or abs(check.info.length - before.info.length) > 0.1:
+            tmp.unlink()
+            return []
+        os.replace(tmp, new)
+        return sorted(vals)
+    except Exception:  # tags are a nicety; never risk the download over them
+        new.with_name(new.name + ".tagging").unlink(missing_ok=True)
+        return []
+
+
 def run_upgrades(s: Session, file_ids: list[int], library_root: Path, ss: Sockseek, rejected_dir: Path,
                  replaced_dir: Path, rounds: int = 3, dry_run: bool = False, log: Callable[[str], None] = print,
                  is_nicotine_running: Callable[[], bool] = nicotine_running) -> UpgradeReport:
@@ -131,6 +188,7 @@ def run_upgrades(s: Session, file_ids: list[int], library_root: Path, ss: Sockse
         c = plan_of[id(p)]
         old = c.file
         old_path = Path(old.path)
+        tagged = copy_tags(old_path, local)  # still in staging: the library is not touched if this fails
         dest = _unique(old_path.parent / local.name)
         shutil.move(str(local), dest)
         new = index_file(s, library_root, dest)
@@ -146,7 +204,8 @@ def run_upgrades(s: Session, file_ids: list[int], library_root: Path, ss: Sockse
         s.delete(old)
         s.flush()
         out.upgraded.append((old_path, dest, parked))
-        log(f"  UPGRADED {c.track.artist} - {c.track.title}: {old_path.name} -> {dest.name}")
+        log(f"  UPGRADED {c.track.artist} - {c.track.title}: {old_path.name} -> {dest.name}"
+            + (f" (tags copied: {', '.join(tagged)})" if tagged else ""))
         return dest
 
     rep = Report()
