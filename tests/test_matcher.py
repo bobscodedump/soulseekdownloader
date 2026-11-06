@@ -144,3 +144,20 @@ def test_numbered_titles_must_match_their_number():
 def test_length_class(text, cls):
     from djlib.normalize import length_class
     assert length_class(text) == cls
+
+
+def test_mixed_compilation_version_accepts_the_unmixed_track():
+    """Cirkle - Skyland (Mixed): 136 of 137 results were dropped for lacking 'mixed' (6 Nov)."""
+    w = Wanted("Cirkle", "Skyland - Mixed", duration_s=200)
+    assert verify_download(w, r"x\Cirkle - Skyland (Original Mix).flac", 380).decision == MATCH
+
+
+@pytest.mark.parametrize("want,have,ok", [
+    (175, 301, True),   # Lowerzone - Ghettoschranz: Spotify 2:55, every copy found 5:01
+    (154, 249, True),   # White Spirit - Meine Kraft
+    (369, 156, False),  # shorter: preview or another song (the Motown "Whisper")
+    (300, 3600, False), # an hour-long DJ mix that contains the title
+])
+def test_longer_same_variant_is_accepted_shorter_is_not(want, have, ok):
+    w = Wanted("Lowerzone", "Ghettoschranz", duration_s=want)
+    assert (verify_download(w, r"x\Lowerzone - Ghettoschranz.mp3", have).decision == MATCH) is ok

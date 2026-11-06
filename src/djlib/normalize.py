@@ -59,7 +59,8 @@ def version_sig(text: str | None) -> set[str]:
 LENGTH_RANK = {"extended": 3, "original": 2, "short": 1}
 _LENGTH_PHRASES = [
     ("extended", re.compile(r"\b(extended|club)(\s+(mix|edit|version|vocal))?\b|\bfull\s+length\b", re.I)),
-    ("short", re.compile(r"\b(short|radio)(\s+(mix|edit|version))?\b", re.I)),
+    # "Mixed" = the segment cut from a DJ-mix compilation; a DJ wants the unmixed track, so it ranks lowest.
+    ("short", re.compile(r"\b(short|radio)(\s+(mix|edit|version))?\b|\bmixed\b", re.I)),
     ("original", re.compile(r"\boriginal(\s+(mix|version))?\b", re.I)),
 ]
 

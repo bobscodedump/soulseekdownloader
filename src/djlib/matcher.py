@@ -11,6 +11,7 @@ from .normalize import (
 )
 
 DURATION_TOL_S = 5.0
+LONGER_OK = 0.6  # a same-variant file may be up to 60% + 1 min longer than listed
 MATCH, REVIEW, NO_MATCH = "match", "review", "no_match"
 
 
@@ -86,8 +87,11 @@ def _duration_ok(w: Wanted, name: str, duration_s: float | None) -> tuple[bool |
     have_cls = length_class(name) or "original"
     diff = duration_s - w.duration_s
     if want_cls == have_cls:
-        ok = abs(diff) <= DURATION_TOL_S
-        return ok, None if ok else f"duration off by {abs(diff):.0f}s"
+        # Spotify often lists a short version with no label, so a longer copy is fine (the user prefers longer);
+        # a shorter one is a preview or another song. Cap it so a whole DJ mix cannot pass.
+        if -DURATION_TOL_S <= diff <= max(DURATION_TOL_S, LONGER_OK * w.duration_s + 60):
+            return True, None
+        return False, f"duration off by {abs(diff):.0f}s"
     if LENGTH_RANK[have_cls] > LENGTH_RANK[want_cls]:
         ok = diff >= -DURATION_TOL_S
         return ok, None if ok else f"{have_cls} version shorter than wanted by {-diff:.0f}s"
