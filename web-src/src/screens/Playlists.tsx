@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, fmtDuration, PlaylistRow, STATUS_LABEL, Summary, TrackRow } from "../api";
+import { api, fmtDuration, ImportResult, PlaylistRow, STATUS_LABEL, Summary, TrackRow } from "../api";
 import StatusTag from "../StatusTag";
 
 export default function Playlists({ summary, onChange }: { summary: Summary | null; onChange: () => void }) {
@@ -13,18 +13,23 @@ export default function Playlists({ summary, onChange }: { summary: Summary | nu
   useEffect(load, [load]);
   useEffect(() => { const t = setInterval(load, 4000); return () => clearInterval(t); }, [load]);
 
-  const importFile = async (f: File) => {
-    try {
-      const r = await api.importCsv(f);
-      const review = r.review ? `, ${r.review} to check in Review` : "";
-      setMsg({ kind: "ok", text: `Imported ${r.name}: ${r.rows} tracks. ${r.owned} already in your library${review}, ${r.rows - r.owned - r.review} to download.` });
-      setOpen(r.id);
-      load();
-      onChange();
-    } catch (e) {
-      setMsg({ kind: "error", text: (e as Error).message });
-    }
+  const [link, setLink] = useState("");
+  const [busyImport, setBusyImport] = useState(false);
+  const imported = (r: ImportResult) => {
+    const review = r.review ? `, ${r.review} to check in Review` : "";
+    const skipped = r.skipped ? ` (${r.skipped} local files or podcasts skipped)` : "";
+    setMsg({ kind: "ok", text: `Imported ${r.name}: ${r.rows} tracks${skipped}. ${r.owned} already in your library${review}, ${r.rows - r.owned - r.review} to download.` });
+    setOpen(r.id);
+    load();
+    onChange();
   };
+  const run = async (f: () => Promise<ImportResult>) => {
+    setBusyImport(true);
+    try { imported(await f()); } catch (e) { setMsg({ kind: "error", text: (e as Error).message }); }
+    setBusyImport(false);
+  };
+  const importFile = (f: File) => run(() => api.importCsv(f));
+  const importLink = () => run(() => api.spotifyImport(link)).then(() => setLink(""));
 
   return (
     <section>
@@ -40,6 +45,12 @@ export default function Playlists({ summary, onChange }: { summary: Summary | nu
         <span className="muted">Drop it here or click to choose. Tracks you already own are marked automatically.</span>
         <input ref={fileInput} type="file" accept=".csv" hidden data-testid="csv-input"
                onChange={(e) => { const f = e.target.files?.[0]; if (f) importFile(f); e.target.value = ""; }} />
+      </div>
+      <div className="linkrow">
+        <input value={link} onChange={(e) => setLink(e.target.value)} placeholder="…or paste a Spotify playlist link (or type: Liked Songs)"
+               className="grow" data-testid="spotify-link" onKeyDown={(e) => { if (e.key === "Enter" && link) importLink(); }} />
+        <button onClick={importLink} disabled={!link || busyImport} data-testid="spotify-import">{busyImport ? "Importing…" : "Import from Spotify"}</button>
+        <a href="#settings" className="muted small">Spotify setup</a>
       </div>
       {msg && <div className={`banner ${msg.kind}`} data-testid="import-msg">{msg.text}</div>}
 

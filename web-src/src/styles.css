@@ -88,3 +88,9 @@ td.actions { display: table-cell; } td.actions > * { margin-right: 6px; }
 .settings label.check { flex-direction: row; align-items: center; gap: 8px; }
 .settings .row { display: flex; gap: 8px; } .settings .grow { flex: 1; font-weight: 400; }
 h3 { font-size: 15px; margin: 0 0 10px; }
+.linkrow { display: flex; gap: 8px; align-items: center; margin-top: 10px; } .linkrow .grow { flex: 1; }
+.spotify { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+.spotify ol { margin: 0; padding-left: 20px; font-weight: 400; } .spotify li { margin: 4px 0; }
+.spotify code { font-family: ui-monospace, Menlo, monospace; font-size: 12px; background: var(--chip); padding: 1px 5px; border-radius: 4px; }
+.ok { color: var(--ok); }
+.button.disabled { opacity: .45; pointer-events: none; }

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, Settings } from "../api";
+import SpotifySettings from "../SpotifySettings";
 
 export default function SettingsScreen({ onChange }: { onChange: () => void }) {
   const [s, setS] = useState<Settings | null>(null);
@@ -34,6 +35,7 @@ export default function SettingsScreen({ onChange }: { onChange: () => void }) {
         </div>
         <span className="muted small">Read-only scan; the app rescans every minute. Downloads are filed into crate folders inside it.</span>
       </label>
+      <SpotifySettings />
       <label className="check">
         <input type="checkbox" checked={s.auto_retry} onChange={(e) => save({ auto_retry: e.target.checked })} />
         Retry failed tracks automatically when they are due

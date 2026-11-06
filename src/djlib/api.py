@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import logging
+import re
+import secrets
 import threading
 import time
 from collections import Counter
@@ -12,7 +14,7 @@ from typing import Callable
 from urllib.parse import quote_plus
 
 from fastapi import FastAPI, File as Upload, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import func, select
@@ -20,7 +22,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from . import review as review_mod
 from .db import Crate, File, Playlist, Setting, Track, TrackStatus, now
-from .ingest_csv import import_csv
+from .ingest_csv import import_csv, save_playlist
 from .jobs import JobRunner
 from .library import mark_owned, playlist_tracks, sync_library
 from .normalize import length_class, strip_length
@@ -28,6 +30,7 @@ from .reasons import summarize
 from .orchestrator import run as run_download
 from .retries import MAX_RETRIES, run_due
 from .sockseek import Sockseek
+from .spotify import Spotify, SpotifyError, TokenStore, authorize_url, make_verifier
 
 WEB_DIST = Path(__file__).parent / "web"
 FAILED = (TrackStatus.failed_no_results, TrackStatus.failed_transfer, TrackStatus.buy)
@@ -43,6 +46,9 @@ class Config:
     background: bool = True  # periodic rescan + scheduled retries
     rescan_every_s: int = 60
     retry_check_every_s: int = 30 * 60
+    port: int = 8765
+    spotify_store: object = None  # TokenStore; None = macOS Keychain
+    spotify_http: object = None  # httpx.Client; tests pass a mock transport
 
 
 class SettingsIn(BaseModel):
@@ -55,6 +61,14 @@ class PlaylistIn(BaseModel):
 class DownloadIn(BaseModel):
     crate: str | None = None
     dry_run: bool = False
+
+class SpotifyIn(BaseModel):
+    client_id: str
+
+
+class SpotifyImportIn(BaseModel):
+    url: str
+
 
 class StatusIn(BaseModel):
     status: str  # retry | buy | ignored
@@ -338,6 +352,88 @@ def create_app(Session_: sessionmaker[Session], cfg: Config) -> FastAPI:
             else:
                 raise HTTPException(400, "unknown review action")
             return {"ok": True}
+
+    # ---------- Spotify ----------
+    pkce: dict[str, str] = {}  # state -> code verifier, for logins in progress
+
+    def redirect_uri() -> str:
+        return f"http://127.0.0.1:{cfg.port}/api/spotify/callback"
+
+    def spotify(s: Session) -> Spotify:
+        st = s.get(Setting, "spotify_client_id")
+        if not st or not st.value:
+            raise SpotifyError("Add your Spotify app's Client ID in Settings first.")
+        return Spotify(st.value, redirect_uri(), cfg.spotify_store, cfg.spotify_http)
+
+    @app.get("/api/spotify")
+    def spotify_status():
+        with Session_() as s:
+            st = s.get(Setting, "spotify_client_id")
+            out = {"client_id": st.value if st else "", "redirect_uri": redirect_uri(), "connected": False, "user": None}
+            if st and st.value:
+                sp = spotify(s)
+                out["connected"] = sp.connected
+                if sp.connected:
+                    try:
+                        out["user"] = sp.me().get("display_name")
+                    except SpotifyError as e:
+                        out["connected"], out["error"] = sp.connected, str(e)
+            return out
+
+    @app.put("/api/spotify")
+    def spotify_set(body: SpotifyIn):
+        cid = body.client_id.strip()
+        if not re.fullmatch(r"[0-9a-f]{32}", cid):
+            raise HTTPException(400, "A Spotify Client ID is 32 characters of 0-9 and a-f (Dashboard > your app > Settings).")
+        with Session_() as s:
+            old = s.get(Setting, "spotify_client_id")
+            if old and old.value != cid:
+                (cfg.spotify_store or TokenStore()).clear()  # tokens belong to the old app
+            s.merge(Setting(key="spotify_client_id", value=cid))
+            s.commit()
+        return spotify_status()
+
+    @app.get("/api/spotify/login")
+    def spotify_login():
+        with Session_() as s:
+            try:
+                sp = spotify(s)
+            except SpotifyError as e:
+                raise HTTPException(400, str(e))
+        state, verifier = secrets.token_urlsafe(16), make_verifier()
+        pkce[state] = verifier
+        return RedirectResponse(authorize_url(sp.client_id, redirect_uri(), verifier, state))
+
+    @app.get("/api/spotify/callback")
+    def spotify_callback(state: str = "", code: str = "", error: str = ""):
+        verifier = pkce.pop(state, None)
+        if error or not code or not verifier:
+            why = error or ("login expired, try again" if not verifier else "no code returned")
+            return RedirectResponse(f"/#settings?spotify_error={quote_plus(why)}")
+        with Session_() as s:
+            try:
+                spotify(s).exchange(code, verifier)
+            except SpotifyError as e:
+                return RedirectResponse(f"/#settings?spotify_error={quote_plus(str(e))}")
+        return RedirectResponse("/#settings?spotify=connected")
+
+    @app.post("/api/spotify/logout")
+    def spotify_logout():
+        (cfg.spotify_store or TokenStore()).clear()
+        return {"ok": True}
+
+    @app.post("/api/spotify/import")
+    def spotify_import(body: SpotifyImportIn):
+        with Session_() as s:
+            try:
+                pl = spotify(s).playlist(body.url)
+            except SpotifyError as e:
+                raise HTTPException(400, str(e))
+            p, st = save_playlist(s, "spotify", f"spotify:playlist:{pl.id}", pl.name, pl.records)
+            marked = mark_owned(s, playlist_tracks(s, p.id), root(s))
+            return {"id": p.id, "name": p.name, "rows": st.rows, "new_tracks": st.new_tracks,
+                    "existing_tracks": st.existing_tracks, "owned": marked["owned"], "review": marked["review"],
+                    "skipped": pl.skipped}
 
     # ---------- web UI ----------
     if (WEB_DIST / "index.html").exists():

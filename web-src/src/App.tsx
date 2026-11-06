@@ -16,7 +16,7 @@ const LABEL: Record<Tab, string> = {
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
 
 const fromHash = (): Tab => {
-  const h = window.location.hash.replace("#", "") as Tab;
+  const h = window.location.hash.replace("#", "").split("?")[0] as Tab;
   return TABS.includes(h) ? h : "playlists";
 };
 

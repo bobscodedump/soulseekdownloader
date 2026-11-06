@@ -89,3 +89,69 @@ def test_playlist_to_crate_without_terminal(server, page):
     page.screenshot(path=str(SHOTS / "5-library.png"), full_page=True)
 
     assert errors == [], errors
+
+
+@pytest.fixture
+def spotify_server(tmp_path):
+    import httpx
+
+    from djlib.spotify import MemoryStore
+    from test_spotify import FakeSpotify
+    lib = tmp_path / "DJ"
+    wav(lib / "08092026" / "KOBOSIL - Cryptic (Kobosil Hart Mix).wav", 302)
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    cfg = Config(library_root=lib, data_dir=tmp_path / "data", rejected_dir=tmp_path / "rejected",
+                 sockseek_factory=lambda wd: None, background=False, port=port, spotify_store=MemoryStore(),
+                 spotify_http=httpx.Client(transport=httpx.MockTransport(FakeSpotify())))
+    app = create_app(session_factory(tmp_path / "t.db"), cfg)
+    srv = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    threading.Thread(target=srv.run, daemon=True).start()
+    while not srv.started:
+        time.sleep(0.05)
+    yield f"http://127.0.0.1:{port}"
+    srv.should_exit = True
+
+
+def test_spotify_setup_connect_and_import(spotify_server, page):
+    from urllib.parse import parse_qs, urlparse
+    url = spotify_server
+    SHOTS.mkdir(exist_ok=True)
+    errors = []
+    page.on("pageerror", lambda e: errors.append(str(e)))
+    page.request.post(f"{url}/api/library/scan")
+
+    # Stand-in for Spotify's consent page. Playwright does not route requests reached through a redirect,
+    # so intercept the app's login endpoint, check where it sends the browser, and approve as Spotify would.
+    def consent(route):
+        resp = route.fetch(max_redirects=0)
+        loc = resp.headers["location"]
+        q = parse_qs(urlparse(loc).query)
+        assert loc.startswith("https://accounts.spotify.com/authorize") and q["redirect_uri"] == [f"{url}/api/spotify/callback"]
+        route.fulfill(status=302, headers={"Location": f"{url}/api/spotify/callback?state={q['state'][0]}&code=ok"})
+    page.route("**/api/spotify/login", consent)
+
+    page.goto(f"{url}/#settings")
+    assert page.get_by_test_id("redirect-uri").inner_text() == f"{url}/api/spotify/callback"
+    page.screenshot(path=str(SHOTS / "6-spotify-setup.png"), full_page=True)
+    page.get_by_test_id("spotify-client-id").fill("0123456789abcdef0123456789abcdef")
+    page.get_by_role("button", name="Save", exact=True).last.click()
+    page.get_by_text("Client ID saved").wait_for()
+    page.get_by_test_id("spotify-connect").click()
+    try:
+        page.get_by_test_id("spotify-status").wait_for(timeout=5000)
+    except Exception:
+        page.screenshot(path=str(SHOTS / "debug-connect.png"), full_page=True)
+        raise AssertionError(f"not connected; url={page.url}")
+    assert "Connected" in page.get_by_test_id("spotify-status").inner_text()
+
+    page.get_by_test_id("tab-playlists").click()
+    page.get_by_test_id("spotify-link").fill("https://open.spotify.com/playlist/4YS9ct5n4NWBf1lFN6a2iv?si=1a778c2c6b69472f")
+    page.get_by_test_id("spotify-import").click()
+    page.get_by_test_id("import-msg").wait_for()
+    msg = page.get_by_test_id("import-msg").inner_text()
+    assert "Imported tch3 on Spotify: 61 tracks" in msg and "1 already in your library" in msg, msg
+    page.screenshot(path=str(SHOTS / "7-spotify-imported.png"), full_page=True)
+    assert errors == [], errors

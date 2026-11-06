@@ -125,3 +125,66 @@ def test_library_shows_the_version_actually_owned(client):
     wait_job(c, c.post(f"/api/playlists/{pl['id']}/download", json={"crate": "06112026"}).json()["id"])
     rows = c.get("/api/library", params={"q": "hot beats"}).json()["rows"]
     assert [r["version"] for r in rows] == ["Extended (listed: Short Mix)"]
+
+
+# ---------- Spotify ----------
+from urllib.parse import parse_qs, urlparse
+
+import httpx
+
+from djlib.spotify import MemoryStore
+from test_spotify import PID, FakeSpotify
+
+
+@pytest.fixture
+def sclient(tmp_path):
+    lib = tmp_path / "DJ"
+    wav(lib / "08092026" / "KOBOSIL - Cryptic (Kobosil Hart Mix).wav", 302)
+    fake = FakeSpotify()
+    cfg = Config(library_root=lib, data_dir=tmp_path / "data", rejected_dir=tmp_path / "rejected",
+                 sockseek_factory=lambda wd: None, background=False, spotify_store=MemoryStore(),
+                 spotify_http=httpx.Client(transport=httpx.MockTransport(fake)))
+    c = TestClient(create_app(session_factory(tmp_path / "t.db"), cfg), follow_redirects=False)
+    c.post("/api/library/scan")
+    c.fake = fake
+    return c
+
+
+def test_spotify_connect_and_import(sclient):
+    c = sclient
+    assert c.put("/api/spotify", json={"client_id": "not-an-id"}).status_code == 400
+    st = c.put("/api/spotify", json={"client_id": "0123456789abcdef0123456789abcdef"}).json()
+    assert st["redirect_uri"] == "http://127.0.0.1:8765/api/spotify/callback" and st["connected"] is False
+
+    r = c.get("/api/spotify/login")
+    assert r.status_code == 307
+    q = parse_qs(urlparse(r.headers["location"]).query)
+    assert r.headers["location"].startswith("https://accounts.spotify.com/authorize")
+    assert q["client_id"] == ["0123456789abcdef0123456789abcdef"] and q["code_challenge_method"] == ["S256"]
+
+    cb = c.get("/api/spotify/callback", params={"state": q["state"][0], "code": "abc"})
+    assert cb.headers["location"] == "/#settings?spotify=connected"
+    assert c.get("/api/spotify").json()["connected"] is True
+
+    imp = c.post("/api/spotify/import", json={"url": f"https://open.spotify.com/playlist/{PID}?si=1"}).json()
+    assert imp["name"] == "tch3 on Spotify" and imp["rows"] == 61 and imp["skipped"] == 2
+    assert imp["owned"] == 1  # Cryptic (Kobosil Hart Mix) is already in the library
+    again = c.post("/api/spotify/import", json={"url": PID}).json()
+    assert again["id"] == imp["id"] and again["new_tracks"] == 0
+
+
+def test_spotify_callback_rejects_unknown_state(sclient):
+    c = sclient
+    c.put("/api/spotify", json={"client_id": "0123456789abcdef0123456789abcdef"})
+    cb = c.get("/api/spotify/callback", params={"state": "forged", "code": "abc"})
+    assert "spotify_error" in cb.headers["location"] and c.get("/api/spotify").json()["connected"] is False
+
+
+def test_spotify_not_owned_playlist_message(sclient):
+    c = sclient
+    c.fake.owned = False
+    c.put("/api/spotify", json={"client_id": "0123456789abcdef0123456789abcdef"})
+    q = parse_qs(urlparse(c.get("/api/spotify/login").headers["location"]).query)
+    c.get("/api/spotify/callback", params={"state": q["state"][0], "code": "abc"})
+    r = c.post("/api/spotify/import", json={"url": PID})
+    assert r.status_code == 400 and "you own or collaborate on" in r.json()["detail"]
