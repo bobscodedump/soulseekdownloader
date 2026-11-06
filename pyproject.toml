@@ -24,6 +24,7 @@ djlib = "djlib.cli:app"
 dev = [
     "httpx>=0.28.1",
     "pyinstaller>=6.22.3",
+    "pyrekordbox>=0.5.0",
     "pytest-playwright>=0.10.0",
     "pytest>=8",
 ]

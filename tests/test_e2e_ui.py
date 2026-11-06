@@ -88,6 +88,17 @@ def test_playlist_to_crate_without_terminal(server, page):
     page.wait_for_function("document.querySelector('[data-testid=lib-total]')?.textContent.startsWith('5 items')")
     page.screenshot(path=str(SHOTS / "5-library.png"), full_page=True)
 
+    # Export for Rekordbox: writes the XML, shows the counts and the one-time Rekordbox steps.
+    page.get_by_test_id("export-run").click()
+    page.wait_for_function("document.querySelector('[data-testid=export-status]')?.textContent.includes('crates,')")
+    status = page.get_by_test_id("export-status").inner_text()
+    assert "4 tracks, 2 crates, 1 playlist." in status and "kept up to date" in status, status
+    assert "rekordbox.xml" in page.get_by_test_id("export-help").inner_text()
+    xml = lib.parent / "data" / "exports" / "rekordbox.xml"
+    assert xml.exists() and 'Name="tch3"' in xml.read_text()
+    assert page.get_by_test_id("export-run").inner_text() == "Export again"
+    page.screenshot(path=str(SHOTS / "8-export.png"), full_page=True)
+
     assert errors == [], errors
 
 

@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from . import review as review_mod
 from .db import Crate, File, Playlist, Setting, Track, TrackStatus, now
+from .export import XML_NAME, export_library, library_signature
 from .ingest_csv import import_csv, save_playlist
 from .jobs import JobRunner
 from .library import mark_owned, playlist_tracks, sync_library
@@ -51,6 +52,7 @@ class Config:
     port: int = 8765
     spotify_store: object = None  # TokenStore; None = macOS Keychain
     spotify_http: object = None  # httpx.Client; tests pass a mock transport
+    export_dir: Path | None = None  # Rekordbox XML + M3U8; None = data_dir / "exports"
 
 
 class SettingsIn(BaseModel):
@@ -80,7 +82,8 @@ class StatusIn(BaseModel):
 def default_config(port: int = 8765) -> Config:
     from .db import db_path
     return Config(library_root=Path.home() / "Desktop" / "DJ", data_dir=db_path().parent,
-                  rejected_dir=Path.home() / "Desktop" / "soulseek" / "downloads" / "rejected", port=port)
+                  rejected_dir=Path.home() / "Desktop" / "soulseek" / "downloads" / "rejected", port=port,
+                  export_dir=Path.home() / "Desktop" / "soulseek" / "exports")
 
 
 def today_crate() -> str:
@@ -111,6 +114,19 @@ def create_app(Session_: sessionmaker[Session], cfg: Config) -> FastAPI:
     def auto_retry(s: Session) -> bool:
         st = s.get(Setting, "auto_retry")
         return st is None or st.value == "1"
+
+    export_dir = cfg.export_dir or cfg.data_dir / "exports"
+    export_lock = threading.Lock()
+
+    def do_export(s: Session):
+        with export_lock:
+            sig = library_signature(s)
+            r = export_library(s, root(s), export_dir)
+            app.state.export_sig = sig
+            return r
+
+    def export_stale(s: Session) -> bool:
+        return getattr(app.state, "export_sig", None) != library_signature(s)
 
     # ---------- work run on the job thread ----------
     def download_work(track_ids: list[int], crate: str, dry_run: bool = False):
@@ -154,6 +170,9 @@ def create_app(Session_: sessionmaker[Session], cfg: Config) -> FastAPI:
             try:
                 with Session_() as s:
                     sync_library(s, root(s))
+                    # Keep an existing Rekordbox export current; Rekordbox re-reads it when refreshed.
+                    if (export_dir / XML_NAME).exists() and export_stale(s):
+                        do_export(s)
                     if auto_retry(s) and time.time() - last_retry > cfg.retry_check_every_s:
                         last_retry = time.time()
                         from .retries import due
@@ -273,7 +292,22 @@ def create_app(Session_: sessionmaker[Session], cfg: Config) -> FastAPI:
             return {"library_root": str(root(s)), "auto_retry": auto_retry(s), "rejected_dir": str(cfg.rejected_dir),
                     "sockseek_path": str(p), "sockseek_ok": p.is_file() and os.access(p, os.X_OK)}
 
+    @app.get("/api/export")
+    def export_status():
+        xml = export_dir / XML_NAME
+        with Session_() as s:
+            return {"xml_path": str(xml), "m3u_dir": str(export_dir / "m3u"), "exists": xml.exists(),
+                    "exported_at": datetime.fromtimestamp(xml.stat().st_mtime).isoformat() if xml.exists() else None,
+                    "stale": xml.exists() and export_stale(s)}
+
     # ---------- write endpoints ----------
+    @app.post("/api/export")
+    def export_now():
+        with Session_() as s:
+            r = do_export(s)
+        return export_status() | {"tracks": r.tracks, "crates": r.crates,
+                                  "playlists": {k: {"tracks": a, "missing": b} for k, (a, b) in r.playlists.items()}}
+
     @app.put("/api/settings")
     def put_settings(body: SettingsIn):
         with Session_() as s:

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, Crate, fmtDuration, LibraryRow } from "../api";
 import StatusTag from "../StatusTag";
+import ExportPanel from "../ExportPanel";
 
 const EMPTY = { q: "", status: "", crate: "", fmt: "", camelot: "", bpm_min: "", bpm_max: "" };
 const CAMELOT = Array.from({ length: 12 }, (_, i) => [`${i + 1}A`, `${i + 1}B`]).flat();
@@ -20,6 +21,7 @@ export default function Library() {
 
   return (
     <section>
+      <ExportPanel />
       <div className="filters">
         <input placeholder="Search artist, title, version" value={f.q} onChange={set("q")} className="grow" data-testid="lib-search" />
         <select value={f.crate} onChange={set("crate")} aria-label="Crate">

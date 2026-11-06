@@ -147,6 +147,18 @@ if __name__ == "__main__":
     app()
 
 
+@app.command("export")
+def export_cmd(out: Path = typer.Option(Path.home() / "Desktop" / "soulseek" / "exports", help="Output folder")):
+    """Write rekordbox.xml and M3U8 playlists for every crate and imported playlist."""
+    from .export import export_library
+    with session_factory()() as s:
+        r = export_library(s, _root(s, None), out)
+    typer.echo(f"{r.xml_path}: {r.tracks} tracks, {len(r.crates)} crates, {len(r.playlists)} playlists")
+    for name, (n, missing) in r.playlists.items():
+        typer.echo(f"  {name}: {n} tracks" + (f" ({missing} not downloaded yet)" if missing else ""))
+    typer.echo(f"M3U8 playlists: {r.m3u_dir}")
+
+
 @app.command("serve")
 def serve_cmd(port: int = 8765, open_browser: bool = typer.Option(True, help="Open the app in the browser")):
     """Start the app at http://127.0.0.1:<port>."""

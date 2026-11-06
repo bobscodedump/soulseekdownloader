@@ -36,6 +36,10 @@ export interface FailedRow {
 }
 export interface SpotifyStatus { client_id: string; redirect_uri: string; connected: boolean; user: string | null; error?: string }
 export interface ImportResult { id: number; name: string; rows: number; new_tracks: number; existing_tracks: number; owned: number; review: number; skipped?: number }
+export interface ExportStatus {
+  xml_path: string; m3u_dir: string; exists: boolean; exported_at: string | null; stale: boolean;
+  tracks?: number; crates?: Record<string, number>; playlists?: Record<string, { tracks: number; missing: number }>;
+}
 export interface Settings { library_root: string; auto_retry: boolean; rejected_dir: string; sockseek_path: string; sockseek_ok: boolean }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
@@ -76,6 +80,8 @@ export const api = {
   failed: () => req<FailedRow[]>("/api/failed"),
   setStatus: (id: number, status: "retry" | "buy" | "ignored") => req(`/api/tracks/${id}/status`, json("POST", { status })),
   runRetries: () => req<Job>("/api/retries/run", { method: "POST" }),
+  exportStatus: () => req<ExportStatus>("/api/export"),
+  exportNow: () => req<ExportStatus>("/api/export", { method: "POST" }),
   spotify: () => req<SpotifyStatus>("/api/spotify"),
   setSpotifyClient: (client_id: string) => req<SpotifyStatus>("/api/spotify", json("PUT", { client_id })),
   spotifyLogout: () => req("/api/spotify/logout", { method: "POST" }),
