@@ -74,6 +74,35 @@ def dupes_cmd(
             typer.echo(f"saved: {link(s, rows)}")
 
 
+@app.command("download")
+def download_cmd(
+    csv_path: Path,
+    crate: str = typer.Option(..., help="Crate folder inside the DJ folder, e.g. 06112026 or shranz"),
+    rounds: int = typer.Option(3, help="Fallback rounds: each round tries the next-best source for what failed"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Search and rank only; download nothing"),
+    rejected: Path = typer.Option(Path.home() / "Desktop" / "soulseek" / "downloads" / "rejected"),
+    workdir: Path = typer.Option(Path.home() / "Desktop" / "soulseek" / "downloads" / "staging"),
+):
+    """Download a playlist CSV into a crate: skips owned tracks, verifies every file before filing."""
+    from .orchestrator import PreflightError, run
+    from .sockseek import Sockseek
+    with session_factory()() as s:
+        root = _root(s, None)
+        pl, _ = import_csv(s, csv_path)
+        try:
+            rep = run(s, playlist_tracks(s, pl.id), root, crate, Sockseek(workdir=workdir), rejected,
+                      rounds=rounds, dry_run=dry_run, log=typer.echo)
+        except PreflightError as e:
+            typer.echo(f"Not started: {e}")
+            raise typer.Exit(2)
+        if dry_run:
+            return
+        typer.echo(f"\nfiled {len(rep.filed)}, rejected {len(rep.rejected)} wrong files, failed {len(rep.failed)}, "
+                   f"already owned {len(rep.owned_before)}")
+        for t, why in rep.failed:
+            typer.echo(f"  FAILED {t.artist} - {t.title}: {why}")
+
+
 @app.command("import-failures")
 def import_failures_cmd(
     csv_path: Path,

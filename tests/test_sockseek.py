@@ -1,0 +1,62 @@
+"""Adapter tests replay outputs recorded from real sockseek 3.0.6 runs (Nov 2026)."""
+from pathlib import Path
+
+import pytest
+
+from djlib.sockseek import Query, SearchResult, Sockseek, parse_events, parse_json_arrays
+
+FIX = Path(__file__).parent / "fixtures"
+
+
+class Replay:
+    def __init__(self, stdout="", stderr="", code=0):
+        self.stdout, self.stderr, self.code, self.calls = stdout, stderr, code, []
+
+    def __call__(self, args, timeout=None):
+        self.calls.append(args)
+        return self.code, self.stdout, self.stderr
+
+
+def test_search_returns_one_ordered_list_per_query(tmp_path):
+    run = Replay((FIX / "search_three.json").read_text())
+    qs = [Query("Nobody Zzqx", "Nonexistent Zzqx Track"), Query("SOLYD, Stoltenhoff", "Hot Beats"), Query("Sicion", "Dancing Shadows")]
+    res = Sockseek(run, tmp_path).search(qs)
+    assert [len(r) for r in res] == [0, 25, 27]
+    top = res[2][0]
+    assert top.username == "Grenoybel" and top.length_s == 431 and top.extension == "mp3"
+    assert top.link.startswith("slsk://Grenoybel/Scene2/2026/05/Techno/MP3/")
+    args = run.calls[0]
+    assert "--concurrent-jobs" in args and args[args.index("--concurrent-jobs") + 1] == "1"
+    assert "--length-tol=-1" in args  # ranking by length is ours, so extended versions are not filtered out
+
+
+def test_search_refuses_misaligned_output(tmp_path):
+    run = Replay((FIX / "search_three.json").read_text())
+    with pytest.raises(RuntimeError, match="3 result lists for 2 queries"):
+        Sockseek(run, tmp_path).search([Query("a", "b"), Query("c", "d")])
+
+
+def test_parse_events_skips_plain_lines():
+    ev = parse_events((FIX / "progress_csv_run.jsonl").read_text())
+    kinds = {e["type"] for e in ev}
+    assert {"track_list", "search_start", "download_start", "track_state", "download_progress"} <= kinds
+
+
+def test_outcomes_map_success_by_user_and_remote_path():
+    ev = parse_events((FIX / "progress_csv_run.jsonl").read_text())
+    ok = SearchResult("Mochrie99", r"l:\flac archive\various artists (multi)\m\marvelettes\(2009) forever - complete motown albums volume 1\disc 1\10 - whisper.flac", 156, 1, None, True, 1.0)
+    missing = SearchResult("nobody", r"x\y.mp3", 1, 1, None, True, 1.0)
+    a, b = Sockseek.outcomes([ok, missing], ev)
+    assert a.succeeded and a.local_path.endswith("10 - whisper.flac")
+    assert not b.succeeded and b.failure == "no result reported"
+
+
+def test_outcomes_report_stale_link_download():
+    ev = parse_events((FIX / "progress_link_stale.jsonl").read_text())
+    r = SearchResult("TheTailorWandersQuietly", r"@@music\Techno\202605\Sicion-Dancing_Shadows-(GRUVEP6)-16BIT-WEB-FLAC-2026-B7R\01-sicion-dancing_shadows_(original_mix).flac", 431, 1, None, True, 1.0)
+    (o,) = Sockseek.outcomes([r], ev)
+    assert not o.succeeded and o.failure == "AllDownloadsFailed"
+
+
+def test_parse_json_arrays_handles_empty_lists():
+    assert parse_json_arrays('[]\n[{"a":1}]\n[]') == [[], [{"a": 1}], []]

@@ -92,6 +92,27 @@ def crate_for(s: Session, root: Path, path: Path) -> Crate | None:
     return crate
 
 
+def index_file(s: Session, root: Path, path: Path) -> File:
+    """Add or refresh one file (used after filing a download), without walking the library."""
+    root, path = Path(root).resolve(), Path(path).resolve()
+    stat = path.stat()
+    f = s.scalar(select(File).where(File.path == str(path)))
+    if f is None:
+        f = File(path=str(path), format=path.suffix.lower().lstrip("."), size=0, mtime=0, sha1="")
+        s.add(f)
+    artist, title = parse_filename(path.stem)
+    for k, v in {**_tags(path), "parsed_artist": artist, "parsed_title": title, "size": stat.st_size,
+                 "mtime": stat.st_mtime, "sha1": quick_hash(path, stat.st_size), "seen_at": now()}.items():
+        setattr(f, k, v)
+    f.crate = crate_for(s, root, path)
+    s.flush()
+    return f
+
+
+def measure_duration(path: Path) -> float | None:
+    return _tags(Path(path))["duration_s"]
+
+
 @dataclass
 class ScanStats:
     seen: int = 0

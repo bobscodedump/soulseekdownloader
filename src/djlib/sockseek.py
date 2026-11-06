@@ -1,0 +1,164 @@
+"""Adapter over the sockseek CLI (pinned 3.0.6).
+
+Two phases, so the app ranks and verifies candidates itself before anything is downloaded:
+  search():   one ordered `--print json-all` run over a CSV -> every result per track
+  download(): one `--input-type=list --progress-json` run over exact slsk:// links
+"""
+from __future__ import annotations
+
+import csv
+import json
+import re
+import subprocess
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Protocol
+
+SOCKSEEK = Path.home() / "Desktop" / "soulseek" / "sockseek" / "sockseek"
+TEST_QUERY = "Daft Punk - Around the World"
+
+
+@dataclass
+class SearchResult:
+    username: str
+    filename: str  # remote path, backslash-separated
+    length_s: float | None
+    size: int | None
+    bitrate: int | None
+    free_slot: bool
+    upload_speed: float
+
+    @property
+    def link(self) -> str:
+        return f"slsk://{self.username}/{self.filename.replace(chr(92), '/')}"
+
+    @property
+    def extension(self) -> str:
+        return Path(self.filename.replace("\\", "/")).suffix.lower().lstrip(".")
+
+
+@dataclass
+class DownloadOutcome:
+    username: str
+    filename: str
+    succeeded: bool
+    local_path: str | None
+    failure: str | None  # e.g. AllDownloadsFailed, stale, rejected reason
+
+
+@dataclass
+class Query:
+    artist: str
+    title: str  # base title, without version words: sockseek requires every search word
+    album: str | None = None
+
+
+class Runner(Protocol):
+    def __call__(self, args: list[str], timeout: float | None = None) -> tuple[int, str, str]: ...
+
+
+def subprocess_runner(binary: Path = SOCKSEEK) -> Runner:
+    def run(args, timeout=None):
+        p = subprocess.run([str(binary), *args], capture_output=True, text=True, timeout=timeout)
+        return p.returncode, p.stdout, p.stderr
+    return run
+
+
+def parse_json_arrays(text: str) -> list[list[dict]]:
+    """sockseek prints one JSON array per search job, interleaved with nothing else on stdout."""
+    dec, pos, out = json.JSONDecoder(), 0, []
+    while True:
+        i = text.find("[", pos)
+        if i < 0:
+            return out
+        obj, pos = dec.raw_decode(text, i)
+        out.append(obj)
+
+
+def parse_events(text: str) -> list[dict]:
+    """--progress-json lines; stdout also carries plain lines (the track list), which are skipped."""
+    out = []
+    for line in text.splitlines():
+        if line.startswith("{"):
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+    return out
+
+
+_STALE = re.compile(r"Error: (?P<msg>(Download attempt became stale|Transfer rejected: [^\n]+|[^\n]*timed out[^\n]*))")
+
+
+class Sockseek:
+    def __init__(self, runner: Runner | None = None, workdir: Path | None = None):
+        self.run = runner or subprocess_runner()
+        self.workdir = Path(workdir or tempfile.mkdtemp(prefix="djlib-"))
+        self.workdir.mkdir(parents=True, exist_ok=True)
+
+    # -- pre-flight -------------------------------------------------------
+    def test_search(self) -> int:
+        """Number of results for a query that always has hundreds; 0 means searches are blocked."""
+        code, out, err = self.run([TEST_QUERY, "--print", "json-all", "--length-tol=-1"], timeout=180)
+        arrays = parse_json_arrays(out)
+        return len(arrays[0]) if arrays else 0
+
+    # -- search -----------------------------------------------------------
+    def search(self, queries: list[Query], on_progress: Callable[[int], None] | None = None) -> list[list[SearchResult]]:
+        path = self.workdir / "search.csv"
+        with open(path, "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh)
+            w.writerow(["Artist", "Title", "Album"])
+            for q in queries:
+                w.writerow([q.artist, q.title, q.album or ""])
+        # --concurrent-jobs 1 keeps one result array per query, in input order.
+        code, out, err = self.run([
+            str(path), "--input-type=csv", "--artist-col", "Artist", "--title-col", "Title", "--album-col", "Album",
+            "--length-tol=-1", "--concurrent-jobs", "1", "--search-timeout", "15000", "--print", "json-all",
+        ], timeout=60 * 60)
+        arrays = parse_json_arrays(out)
+        if len(arrays) != len(queries):
+            raise RuntimeError(f"sockseek returned {len(arrays)} result lists for {len(queries)} queries: {err[-500:]}")
+        return [[self._result(r) for r in arr] for arr in arrays]
+
+    @staticmethod
+    def _result(r: dict) -> SearchResult:
+        u, f = r.get("User", {}), r.get("File", {})
+        return SearchResult(
+            username=u.get("Username", ""), filename=f.get("Filename", ""), length_s=f.get("Length"),
+            size=f.get("Size"), bitrate=f.get("Bitrate"), free_slot=bool(u.get("HasFreeUploadSlot")),
+            upload_speed=float(u.get("UploadSpeed") or 0),
+        )
+
+    # -- download ---------------------------------------------------------
+    def download(self, results: list[SearchResult], out_dir: Path, stale_ms: int = 120_000) -> list[DownloadOutcome]:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        links = self.workdir / "links.txt"
+        links.write_text("".join(f'"{r.link}"\n' for r in results), encoding="utf-8")
+        code, out, err = self.run([
+            str(links), "--input-type=list", "--progress-json", "--max-stale-time", str(stale_ms),
+            "-o", str(out_dir), "--no-write-index",
+        ], timeout=4 * 60 * 60)
+        return self.outcomes(results, parse_events(out), err)
+
+    @staticmethod
+    def outcomes(results: list[SearchResult], events: list[dict], stderr: str = "") -> list[DownloadOutcome]:
+        """One outcome per requested result, matched on (username, remote filename)."""
+        final: dict[tuple[str, str], dict] = {}
+        for e in events:
+            if e.get("type") == "track_state" and e["data"].get("lifecycleState") == "Terminal":
+                d = e["data"]
+                final[(d.get("username", ""), d.get("filename", ""))] = d
+        errors = {}
+        for m in _STALE.finditer(stderr):
+            errors.setdefault("last", m["msg"])
+        out = []
+        for r in results:
+            d = final.get((r.username, r.filename))
+            if d and d.get("terminalOutcome") == "Succeeded":
+                out.append(DownloadOutcome(r.username, r.filename, True, d.get("downloadPath"), None))
+            else:
+                reason = (d or {}).get("failureReason") or "no result reported"
+                out.append(DownloadOutcome(r.username, r.filename, False, None, reason))
+        return out
