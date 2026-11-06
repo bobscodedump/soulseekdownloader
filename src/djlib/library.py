@@ -69,6 +69,16 @@ def dedupe(s: Session, tracks: list[Track], index: FileIndex, exclude_crates: se
     return [DupeRow(t, *index.best(t, exclude_crates)) for t in tracks]
 
 
+def record_link(s: Session, f: File, t: Track, method: str, score: float, reason: str | None = None) -> MatchLink:
+    """Insert or update the (file, track) link; a review link can later become an automatic one."""
+    ml = s.scalar(select(MatchLink).where(MatchLink.file_id == f.id, MatchLink.track_id == t.id))
+    if ml is None:
+        ml = MatchLink(file_id=f.id, track_id=t.id, method=method, score=score)
+        s.add(ml)
+    ml.method, ml.score, ml.reason = method, score, reason
+    return ml
+
+
 def link(s: Session, rows: list[DupeRow]) -> dict[str, int]:
     """Record matches: auto matches mark the track owned; review matches wait for a person."""
     counts = {"owned": 0, "review": 0}
@@ -76,11 +86,7 @@ def link(s: Session, rows: list[DupeRow]) -> dict[str, int]:
         if not r.file or r.result.decision == NO_MATCH:
             continue
         method = AUTO if r.result.decision == MATCH else PENDING_REVIEW
-        ml = s.scalar(select(MatchLink).where(MatchLink.file_id == r.file.id, MatchLink.track_id == r.track.id))
-        if not ml:
-            ml = MatchLink(file_id=r.file.id, track_id=r.track.id, method=method, score=r.result.score)
-            s.add(ml)
-        ml.reason = "; ".join(r.result.reasons) or None
+        record_link(s, r.file, r.track, method, r.result.score, "; ".join(r.result.reasons) or None)
         if method == AUTO:
             r.file.track_id = r.track.id
             r.track.status = TrackStatus.owned

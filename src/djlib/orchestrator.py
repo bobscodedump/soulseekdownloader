@@ -10,9 +10,9 @@ from typing import Callable
 
 from sqlalchemy.orm import Session
 
-from .db import DownloadAttempt, DownloadJob, MatchLink, Track, TrackStatus, now
+from .db import DownloadAttempt, DownloadJob, Track, TrackStatus, now
 from .failures import RETRY_AFTER
-from .library import FileIndex, files_in, wanted
+from .library import FileIndex, files_in, record_link, wanted
 from .matcher import MATCH, verify_download
 from .ranking import Ranked, rank
 from .scanner import index_file, measure_duration
@@ -108,7 +108,7 @@ def run(
             rep.owned_before.append(t)
             if not dry_run:
                 f.track_id, t.status = t.id, TrackStatus.owned
-                s.add(MatchLink(file_id=f.id, track_id=t.id, method="fuzzy", score=r.score))
+                record_link(s, f, t, "fuzzy", r.score)
             continue
         todo.append(t)
     log(f"{len(rep.owned_before)} already owned, {len(todo)} to search")
@@ -205,7 +205,7 @@ def _handle(s, job, p: TrackPlan, cand: Ranked, o: DownloadOutcome, crate_dir: P
     shutil.move(str(local), dest)
     f = index_file(s, library_root, dest)
     f.track_id = t.id
-    s.add(MatchLink(file_id=f.id, track_id=t.id, method="download", score=1.0, reason=f"from {r.username}"))
+    record_link(s, f, t, "download", 1.0, f"from {r.username}")
     t.status, t.status_reason, t.next_retry_at = TrackStatus.owned, None, None
     attempt.result = "filed"
     p.done = True

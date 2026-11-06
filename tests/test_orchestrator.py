@@ -192,3 +192,17 @@ def test_round_caps_picks_per_peer(env):
     fake = FakeSockseek(tmp / "work", results, transfers)
     run(s, tracks, lib, "x", fake, tmp / "rejected", rounds=1, log=lambda m: None, is_nicotine_running=lambda: False)
     assert len(fake.downloaded) == 3  # MAX_PER_USER_PER_ROUND
+
+
+def test_review_link_upgrades_to_owned_without_crash(env):
+    """Regression (6 Nov gate run): a pending review link for the same file+track made the run crash."""
+    from djlib.db import File, MatchLink
+    s, lib, tracks, tmp = env
+    flash = next(t for t in tracks if t.title == "Flash")
+    f = s.scalar(select(File))
+    s.add(MatchLink(file_id=f.id, track_id=flash.id, method="fuzzy_review", score=0.8))
+    s.commit()
+    run(s, tracks, lib, "x", FakeSockseek(tmp / "w", {}, {}), tmp / "r", dry_run=False, log=lambda m: None,
+        is_nicotine_running=lambda: False)
+    links = s.scalars(select(MatchLink).where(MatchLink.track_id == flash.id)).all()
+    assert len(links) == 1 and links[0].method == "fuzzy" and flash.status is TrackStatus.owned
