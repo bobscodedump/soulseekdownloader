@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 import secrets
 import threading
@@ -29,7 +30,8 @@ from .normalize import length_class, strip_length
 from .reasons import summarize
 from .orchestrator import run as run_download
 from .retries import MAX_RETRIES, run_due
-from .sockseek import Sockseek
+from .orchestrator import PreflightError
+from .sockseek import SOCKSEEK, Sockseek, subprocess_runner
 from .spotify import Spotify, SpotifyError, TokenStore, authorize_url, make_verifier
 
 WEB_DIST = Path(__file__).parent / "web"
@@ -41,7 +43,7 @@ class Config:
     library_root: Path
     data_dir: Path  # uploaded playlists, staging, logs
     rejected_dir: Path
-    sockseek_factory: Callable[[Path], Sockseek]
+    sockseek_factory: Callable[[Path], Sockseek] | None = None  # None: real sockseek at the configured path
     nicotine_check: Callable[[], bool] | None = None
     background: bool = True  # periodic rescan + scheduled retries
     rescan_every_s: int = 60
@@ -54,6 +56,7 @@ class Config:
 class SettingsIn(BaseModel):
     library_root: str | None = None
     auto_retry: bool | None = None
+    sockseek_path: str | None = None
 
 class PlaylistIn(BaseModel):
     crate: str
@@ -74,6 +77,12 @@ class StatusIn(BaseModel):
     status: str  # retry | buy | ignored
 
 
+def default_config(port: int = 8765) -> Config:
+    from .db import db_path
+    return Config(library_root=Path.home() / "Desktop" / "DJ", data_dir=db_path().parent,
+                  rejected_dir=Path.home() / "Desktop" / "soulseek" / "downloads" / "rejected", port=port)
+
+
 def today_crate() -> str:
     return datetime.now().strftime("%d%m%Y")
 
@@ -87,6 +96,18 @@ def create_app(Session_: sessionmaker[Session], cfg: Config) -> FastAPI:
         st = s.get(Setting, "library_root")
         return Path(st.value) if st else cfg.library_root
 
+    def sockseek_path(s: Session) -> Path:
+        st = s.get(Setting, "sockseek_path")
+        return Path(st.value) if st else SOCKSEEK
+
+    def make_sockseek(s: Session) -> Sockseek:
+        if cfg.sockseek_factory:
+            return cfg.sockseek_factory(cfg.data_dir / "staging")
+        path = sockseek_path(s)
+        if not (path.is_file() and os.access(path, os.X_OK)):
+            raise PreflightError(f"sockseek was not found at {path}. Set its location in Settings.")
+        return Sockseek(subprocess_runner(path), cfg.data_dir / "staging")
+
     def auto_retry(s: Session) -> bool:
         st = s.get(Setting, "auto_retry")
         return st is None or st.value == "1"
@@ -97,7 +118,7 @@ def create_app(Session_: sessionmaker[Session], cfg: Config) -> FastAPI:
             with Session_() as s:
                 tracks = [s.get(Track, i) for i in track_ids]
                 kwargs = {"is_nicotine_running": cfg.nicotine_check} if cfg.nicotine_check else {}
-                ss = cfg.sockseek_factory(cfg.data_dir / "staging")
+                ss = make_sockseek(s)
                 rep = run_download(s, tracks, root(s), crate, ss, cfg.rejected_dir, dry_run=dry_run, log=log, **kwargs)
                 if dry_run:
                     return {"plan": [{"track": f"{p.track.artist} - {p.track.title}", "candidates": len(p.candidates),
@@ -114,7 +135,7 @@ def create_app(Session_: sessionmaker[Session], cfg: Config) -> FastAPI:
             def dl(tracks, crate):
                 log(f"retrying {len(tracks)} tracks into {crate}")
                 kwargs = {"is_nicotine_running": cfg.nicotine_check} if cfg.nicotine_check else {}
-                rep = run_download(s, tracks, root(s), crate, cfg.sockseek_factory(cfg.data_dir / "staging"),
+                rep = run_download(s, tracks, root(s), crate, make_sockseek(s),
                                    cfg.rejected_dir, log=log, **kwargs)
                 out[crate] = {"filed": len(rep.filed), "failed": len(rep.failed)}
 
@@ -248,7 +269,9 @@ def create_app(Session_: sessionmaker[Session], cfg: Config) -> FastAPI:
     @app.get("/api/settings")
     def get_settings():
         with Session_() as s:
-            return {"library_root": str(root(s)), "auto_retry": auto_retry(s), "rejected_dir": str(cfg.rejected_dir)}
+            p = sockseek_path(s)
+            return {"library_root": str(root(s)), "auto_retry": auto_retry(s), "rejected_dir": str(cfg.rejected_dir),
+                    "sockseek_path": str(p), "sockseek_ok": p.is_file() and os.access(p, os.X_OK)}
 
     # ---------- write endpoints ----------
     @app.put("/api/settings")
@@ -261,6 +284,11 @@ def create_app(Session_: sessionmaker[Session], cfg: Config) -> FastAPI:
                 s.merge(Setting(key="library_root", value=str(p.resolve())))
             if body.auto_retry is not None:
                 s.merge(Setting(key="auto_retry", value="1" if body.auto_retry else "0"))
+            if body.sockseek_path is not None:
+                p = Path(body.sockseek_path).expanduser()
+                if not (p.is_file() and os.access(p, os.X_OK)):
+                    raise HTTPException(400, f"not an executable file: {p}")
+                s.merge(Setting(key="sockseek_path", value=str(p.resolve())))
             s.commit()
         return get_settings()
 

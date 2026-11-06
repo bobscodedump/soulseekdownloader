@@ -5,9 +5,10 @@ import SpotifySettings from "../SpotifySettings";
 export default function SettingsScreen({ onChange }: { onChange: () => void }) {
   const [s, setS] = useState<Settings | null>(null);
   const [root, setRoot] = useState("");
+  const [ssPath, setSsPath] = useState("");
   const [msg, setMsg] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
 
-  useEffect(() => { api.settings().then((x) => { setS(x); setRoot(x.library_root); }); }, []);
+  useEffect(() => { api.settings().then((x) => { setS(x); setRoot(x.library_root); setSsPath(x.sockseek_path); }); }, []);
   if (!s) return <p className="muted">Loading…</p>;
 
   const save = async (patch: Partial<Settings>) => {
@@ -34,6 +35,16 @@ export default function SettingsScreen({ onChange }: { onChange: () => void }) {
           <button onClick={rescan}>Rescan now</button>
         </div>
         <span className="muted small">Read-only scan; the app rescans every minute. Downloads are filed into crate folders inside it.</span>
+      </label>
+      <label>sockseek program
+        <div className="row">
+          <input value={ssPath} onChange={(e) => setSsPath(e.target.value)} className="grow" data-testid="sockseek-path" />
+          <button onClick={() => save({ sockseek_path: ssPath })} disabled={ssPath === s.sockseek_path}>Save</button>
+        </div>
+        <span className={`small ${s.sockseek_ok ? "muted" : "error"}`}>
+          {s.sockseek_ok ? "Found. Downloads use your Soulseek login from ~/.config/sockseek/sockseek.conf."
+                         : "Not found at this path: downloads cannot start until it is set."}
+        </span>
       </label>
       <SpotifySettings />
       <label className="check">

@@ -188,3 +188,23 @@ def test_spotify_not_owned_playlist_message(sclient):
     c.get("/api/spotify/callback", params={"state": q["state"][0], "code": "abc"})
     r = c.post("/api/spotify/import", json={"url": PID})
     assert r.status_code == 400 and "you own or collaborate on" in r.json()["detail"]
+
+
+def test_missing_sockseek_stops_with_clear_message(tmp_path):
+    lib = tmp_path / "DJ"
+    lib.mkdir()
+    cfg = Config(library_root=lib, data_dir=tmp_path / "data", rejected_dir=tmp_path / "r", background=False,
+                 nicotine_check=lambda: False)
+    c = TestClient(create_app(session_factory(tmp_path / "t.db"), cfg))
+    assert c.put("/api/settings", json={"sockseek_path": str(tmp_path / "nope")}).status_code == 400
+    exe = tmp_path / "fake-sockseek"
+    exe.write_text("#!/bin/sh\nexit 0\n")
+    exe.chmod(0o644)
+    assert c.put("/api/settings", json={"sockseek_path": str(exe)}).status_code == 400  # not executable
+    exe.chmod(0o755)
+    st = c.put("/api/settings", json={"sockseek_path": str(exe)}).json()
+    assert st["sockseek_ok"] is True and st["sockseek_path"] == str(exe.resolve())
+    exe.unlink()
+    pl = upload(c)
+    done = wait_job(c, c.post(f"/api/playlists/{pl['id']}/download", json={"crate": "x"}).json()["id"])
+    assert done["state"] == "aborted" and "sockseek was not found" in done["result"]["error"]

@@ -36,7 +36,7 @@ export interface FailedRow {
 }
 export interface SpotifyStatus { client_id: string; redirect_uri: string; connected: boolean; user: string | null; error?: string }
 export interface ImportResult { id: number; name: string; rows: number; new_tracks: number; existing_tracks: number; owned: number; review: number; skipped?: number }
-export interface Settings { library_root: string; auto_retry: boolean; rejected_dir: string }
+export interface Settings { library_root: string; auto_retry: boolean; rejected_dir: string; sockseek_path: string; sockseek_ok: boolean }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(path, init);

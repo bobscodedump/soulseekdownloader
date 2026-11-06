@@ -8,7 +8,7 @@ const CAMELOT = Array.from({ length: 12 }, (_, i) => [`${i + 1}A`, `${i + 1}B`])
 export default function Library() {
   const [f, setF] = useState(EMPTY);
   const [rows, setRows] = useState<LibraryRow[]>([]);
-  const [total, setTotal] = useState(0);
+  const [total, setTotal] = useState<number | null>(null);
   const [crates, setCrates] = useState<Crate[]>([]);
   const set = (k: keyof typeof EMPTY) => (e: { target: { value: string } }) => setF({ ...f, [k]: e.target.value });
 
@@ -44,7 +44,8 @@ export default function Library() {
         <input type="number" placeholder="to" value={f.bpm_max} onChange={set("bpm_max")} className="bpm" />
         {JSON.stringify(f) !== JSON.stringify(EMPTY) && <button onClick={() => setF(EMPTY)}>Clear</button>}
       </div>
-      <p className="muted small" data-testid="lib-total">{total} {total === 1 ? "item" : "items"}{total > rows.length ? `, showing ${rows.length}` : ""}</p>
+      <p className="muted small" data-testid="lib-total">{total === null ? "Loading…"
+        : `${total} ${total === 1 ? "item" : "items"}${total > rows.length ? `, showing ${rows.length}` : ""}`}</p>
       <table className="grid">
         <thead><tr>
           <th>Artist</th><th>Title</th><th>Version</th><th className="num">BPM</th><th>Key</th><th className="num">Energy</th>
