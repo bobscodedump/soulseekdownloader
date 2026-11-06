@@ -97,6 +97,14 @@ def link(s: Session, rows: list[DupeRow]) -> dict[str, int]:
     return counts
 
 
+def mark_owned(s: Session, tracks: list[Track], library_root: str | Path) -> dict[str, int]:
+    """Check tracks against the library right away: matches become owned, near-misses go to review."""
+    todo = [t for t in tracks if t.status is not TrackStatus.owned]
+    if not todo:
+        return {"owned": 0, "review": 0}
+    return link(s, dedupe(s, todo, FileIndex(files_in(s, str(library_root)))))
+
+
 def playlist_tracks(s: Session, playlist_id: int) -> list[Track]:
     q = (select(Track).join(PlaylistItem, PlaylistItem.track_id == Track.id)
          .where(PlaylistItem.playlist_id == playlist_id).order_by(PlaylistItem.position))

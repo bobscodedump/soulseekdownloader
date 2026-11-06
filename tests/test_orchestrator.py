@@ -76,25 +76,25 @@ def env(tmp_path):
 
 RESULTS = {
     "Funkhaus - Lumen": [
-        R("queued", r"m\Funkhaus - Lumen (Original Mix).flac", 300),          # fails transfer
-        R("good", r"m\11-funkhaus-lumen.mp3", 300, 320),                       # then succeeds
+        R("queued", r"m\Funkhaus - Lumen (Original Mix).wav", 300),          # fails transfer
+        R("good", r"m\11-funkhaus-lumen.wav", 300, 320),                       # then succeeds
     ],
     "KUSS, GRÜV - Obsessed": [
         R("books", r"Books\Audiobooks\James Patterson - Obsessed-Part 2.mp3", 291),  # never downloaded
-        R("liar", r"m\KUSS & GRUV - Obsessed.flac", 291),                      # reports 291 s, is really 120 s
+        R("liar", r"m\KUSS & GRUV - Obsessed.wav", 291),                      # reports 291 s, is really 120 s
     ],
     "HEMPTOTE - Selva": [],
     "SOLYD, Stoltenhoff - Hot Beats": [
-        R("short", r"m\SOLYD - Hot Beats (Short Mix).flac", 241),
-        R("ext", r"m\SOLYD - Hot Beats (Extended Mix).mp3", 362, 320),
+        R("short", r"m\SOLYD - Hot Beats (Short Mix).wav", 241),
+        R("ext", r"m\SOLYD - Hot Beats (Extended Mix).wav", 362, 320),
     ],
 }
 TRANSFERS = {
-    ("queued", r"m\Funkhaus - Lumen (Original Mix).flac"): "Transfer rejected: Too many megabytes",
-    ("good", r"m\11-funkhaus-lumen.mp3"): 300,
-    ("liar", r"m\KUSS & GRUV - Obsessed.flac"): 120,
-    ("ext", r"m\SOLYD - Hot Beats (Extended Mix).mp3"): 362,
-    ("short", r"m\SOLYD - Hot Beats (Short Mix).flac"): 241,
+    ("queued", r"m\Funkhaus - Lumen (Original Mix).wav"): "Transfer rejected: Too many megabytes",
+    ("good", r"m\11-funkhaus-lumen.wav"): 300,
+    ("liar", r"m\KUSS & GRUV - Obsessed.wav"): 120,
+    ("ext", r"m\SOLYD - Hot Beats (Extended Mix).wav"): 362,
+    ("short", r"m\SOLYD - Hot Beats (Short Mix).wav"): 241,
 }
 
 
@@ -111,18 +111,19 @@ def test_full_run(env):
     assert not any(u == "books" for u, _ in fake.downloaded)
     # Lumen: first source refused (quota), second filed.
     assert by["Lumen"].status is TrackStatus.owned
-    assert (lib / "06112026" / "11-funkhaus-lumen.mp3").exists()
+    assert (lib / "06112026" / "11-funkhaus-lumen.wav").exists()
     # Hot Beats: extended preferred over the short mix it was listed as.
     assert by["Hot Beats"].status is TrackStatus.owned
-    assert (lib / "06112026" / "SOLYD - Hot Beats (Extended Mix).mp3").exists()
-    assert ("short", r"m\SOLYD - Hot Beats (Short Mix).flac") not in fake.downloaded
+    assert (lib / "06112026" / "SOLYD - Hot Beats (Extended Mix).wav").exists()
+    assert ("short", r"m\SOLYD - Hot Beats (Short Mix).wav") not in fake.downloaded
     # Obsessed: the file lied about its length; measured 120 s -> rejected, never filed.
     assert by["Obsessed"].status is TrackStatus.failed_transfer
-    assert (tmp / "rejected" / "KUSS & GRUV - Obsessed.flac").exists()
+    assert (tmp / "rejected" / "KUSS & GRUV - Obsessed.wav").exists()
     rej = s.scalar(select(DownloadAttempt).where(DownloadAttempt.result == "rejected"))
-    assert rej.local_path == str((tmp / "rejected" / "KUSS & GRUV - Obsessed.flac").resolve())
-    assert not (lib / "06112026" / "KUSS & GRUV - Obsessed.flac").exists()
+    assert rej.local_path == str((tmp / "rejected" / "KUSS & GRUV - Obsessed.wav").resolve())
+    assert not (lib / "06112026" / "KUSS & GRUV - Obsessed.wav").exists()
     assert "wrong file rejected" in by["Obsessed"].status_reason
+    assert "duration off by 171s" in by["Obsessed"].status_reason  # measured 120 s, not the 291 s it claimed
     # Selva: nothing found.
     assert by["Selva"].status is TrackStatus.failed_no_results and by["Selva"].next_retry_at
     # Every attempt is recorded.
@@ -158,10 +159,10 @@ def test_preflight_blocks_when_nicotine_is_running(env):
 
 def test_filing_never_overwrites(env):
     s, lib, tracks, tmp = env
-    wav(lib / "06112026" / "11-funkhaus-lumen.mp3", 10)  # unrelated file with the same name
+    wav(lib / "06112026" / "11-funkhaus-lumen.wav", 10)  # unrelated file with the same name
     fake = FakeSockseek(tmp / "work", RESULTS, TRANSFERS)
     run(s, tracks, lib, "06112026", fake, tmp / "rejected", log=lambda m: None, is_nicotine_running=lambda: False)
-    assert (lib / "06112026" / "11-funkhaus-lumen (2).mp3").exists()
+    assert (lib / "06112026" / "11-funkhaus-lumen (2).wav").exists()
 
 
 def test_one_slow_peer_cannot_sink_the_job(env):
@@ -172,8 +173,8 @@ def test_one_slow_peer_cannot_sink_the_job(env):
         if t.title == "Flash":
             continue
         key = f"{t.artist} - {t.title}"
-        slow = R("slowpeer", rf"m\{t.artist} - {t.title}.flac", t.duration_s)
-        good = R(f"ok-{t.id}", rf"m\{t.artist} - {t.title}.mp3", t.duration_s, 320)
+        slow = R("slowpeer", rf"m\{t.artist} - {t.title}.wav", t.duration_s)
+        good = R(f"ok-{t.id}", rf"m\{t.artist} - {t.title} (copy).wav", t.duration_s, 320)
         results[key] = [slow, good]
         transfers[(slow.username, slow.filename)] = "Download attempt became stale after 120000ms"
         transfers[(good.username, good.filename)] = t.duration_s
@@ -188,7 +189,7 @@ def test_one_slow_peer_cannot_sink_the_job(env):
 
 def test_round_caps_picks_per_peer(env):
     s, lib, tracks, tmp = env
-    results = {f"{t.artist} - {t.title}": [R("bigpeer", rf"m\{t.artist} - {t.title}.flac", t.duration_s)]
+    results = {f"{t.artist} - {t.title}": [R("bigpeer", rf"m\{t.artist} - {t.title}.wav", t.duration_s)]
                for t in tracks if t.title != "Flash"}
     transfers = {(r[0].username, r[0].filename): None for r in results.values()}
     fake = FakeSockseek(tmp / "work", results, transfers)

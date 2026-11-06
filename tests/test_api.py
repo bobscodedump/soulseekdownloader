@@ -54,7 +54,7 @@ def test_import_preview_download_and_failed_list(client):
     assert done["state"] == "finished", done["log"]
     assert done["result"] == {"filed": 2, "rejected": 1, "failed": 2, "owned": 1, "crate": "06112026"}
     assert any("FILED" in line for line in done["log"])
-    assert (c.lib / "06112026" / "SOLYD - Hot Beats (Extended Mix).mp3").exists()
+    assert (c.lib / "06112026" / "SOLYD - Hot Beats (Extended Mix).wav").exists()
 
     detail = c.get(f"/api/playlists/{pl['id']}").json()
     assert detail["crate"] == "06112026"
@@ -65,7 +65,7 @@ def test_import_preview_download_and_failed_list(client):
     assert all(f["buy"]["bandcamp"].startswith("https://bandcamp.com/search?q=") for f in failed)
 
     lib = c.get("/api/library", params={"crate": "06112026"}).json()
-    assert lib["total"] == 2 and {r["format"] for r in lib["rows"]} == {"mp3"}
+    assert lib["total"] == 2 and {r["format"] for r in lib["rows"]} == {"wav"}
 
 
 def test_review_rejected_file_accept_files_it(client):
@@ -74,9 +74,9 @@ def test_review_rejected_file_accept_files_it(client):
     wait_job(c, c.post(f"/api/playlists/{pl['id']}/download", json={"crate": "06112026"}).json()["id"])
     items = c.get("/api/review").json()
     (rej,) = [i for i in items if i["kind"] == "rejected"]
-    assert rej["title"] == "Obsessed" and "duration" in rej["reason"]
+    assert rej["title"] == "Obsessed" and "duration off by 171s" in rej["reason"]
     r = c.post(f"/api/review/rejected/{rej['id']}/accept").json()
-    assert r["filed"].endswith("06112026/KUSS & GRUV - Obsessed.flac")
+    assert r["filed"].endswith("06112026/KUSS & GRUV - Obsessed.wav")
     assert c.get("/api/review").json() == []
     assert "Obsessed" not in {f["title"] for f in c.get("/api/failed").json()}
 
@@ -117,3 +117,11 @@ def test_summary_and_crates(client):
     s = c.get("/api/summary").json()
     assert s["files"] == 1 and s["current_job"] is None and len(s["today_crate"]) == 8
     assert c.get("/api/crates").json() == [{"name": "08092026", "kind": "dated", "files": 1}]
+
+
+def test_library_shows_the_version_actually_owned(client):
+    c = client
+    pl = upload(c)
+    wait_job(c, c.post(f"/api/playlists/{pl['id']}/download", json={"crate": "06112026"}).json()["id"])
+    rows = c.get("/api/library", params={"q": "hot beats"}).json()["rows"]
+    assert [r["version"] for r in rows] == ["Extended (listed: Short Mix)"]

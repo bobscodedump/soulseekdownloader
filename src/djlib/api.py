@@ -21,7 +21,8 @@ from . import review as review_mod
 from .db import Crate, File, Playlist, Setting, Track, TrackStatus, now
 from .ingest_csv import import_csv
 from .jobs import JobRunner
-from .library import playlist_tracks
+from .library import mark_owned, playlist_tracks
+from .normalize import length_class, strip_length
 from .orchestrator import run as run_download
 from .retries import MAX_RETRIES, run_due
 from .scanner import scan
@@ -161,7 +162,7 @@ def create_app(Session_: sessionmaker[Session], cfg: Config) -> FastAPI:
                     "kind": "file", "file_id": f.id, "track_id": t.id if t else None,
                     "artist": (t.artist if t else None) or f.tag_artist or f.parsed_artist or "",
                     "title": (t.title if t else None) or f.tag_title or f.parsed_title or Path(f.path).stem,
-                    "version": t.version if t else None, "bpm": t.bpm if t else None, "camelot": t.camelot if t else None,
+                    "version": _file_version(t, f), "bpm": t.bpm if t else None, "camelot": t.camelot if t else None,
                     "energy": t.energy if t else None, "crate": c.name if c else "", "format": f.format,
                     "bitrate": f.bitrate, "duration": f.duration_s, "status": "owned", "path": f.path,
                 })
@@ -267,8 +268,9 @@ def create_app(Session_: sessionmaker[Session], cfg: Config) -> FastAPI:
                 pl, st = import_csv(s, dest)
             except ValueError as e:
                 raise HTTPException(400, str(e))
+            marked = mark_owned(s, playlist_tracks(s, pl.id), root(s))
             return {"id": pl.id, "name": pl.name, "rows": st.rows, "new_tracks": st.new_tracks,
-                    "existing_tracks": st.existing_tracks}
+                    "existing_tracks": st.existing_tracks, "owned": marked["owned"], "review": marked["review"]}
 
     @app.patch("/api/playlists/{pid}")
     def set_crate(pid: int, body: PlaylistIn):
@@ -343,6 +345,19 @@ def create_app(Session_: sessionmaker[Session], cfg: Config) -> FastAPI:
             return FileResponse(WEB_DIST / "index.html")
 
     return app
+
+
+def _file_version(t: Track | None, f: File) -> str | None:
+    """What the file actually is, noting when it differs from the version the playlist listed."""
+    name = " ".join(x for x in (f.tag_title, Path(f.path).stem) if x)
+    have = length_class(name)
+    if t is None:
+        return have.capitalize() if have and have != "original" else None
+    want = length_class(t.version) or "original"
+    if have and have != want:
+        rest = strip_length(t.version).strip(" -").title() if t.version else ""
+        return f"{have.capitalize()}{' ' + rest if rest else ''} (listed: {t.version or 'Original'})"
+    return t.version
 
 
 def _404(what: str):

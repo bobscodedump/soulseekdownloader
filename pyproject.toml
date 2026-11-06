@@ -20,6 +20,7 @@ djlib = "djlib.cli:app"
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",
+    "pytest-playwright>=0.10.0",
     "pytest>=8",
 ]
 

@@ -1,0 +1,91 @@
+"""Browser test: the M3 gate, "playlist to crate with no terminal", against the real server and built UI.
+
+Uses a fake sockseek (no network) and a temp library. Screenshots go to tests/.screens/.
+"""
+import socket
+import threading
+import time
+from pathlib import Path
+
+import pytest
+import uvicorn
+
+from djlib.api import WEB_DIST, Config, create_app
+from djlib.db import session_factory
+from test_orchestrator import CSV, RESULTS, TRANSFERS, FakeSockseek, wav
+
+pytestmark = pytest.mark.skipif(not (WEB_DIST / "index.html").exists(), reason="UI not built (npm run build)")
+SHOTS = Path(__file__).parent / ".screens"
+
+
+@pytest.fixture
+def server(tmp_path):
+    lib = tmp_path / "DJ"
+    wav(lib / "08092026" / "Kai Van Dongen - Flash (Original Mix).wav", 240)
+    cfg = Config(library_root=lib, data_dir=tmp_path / "data", rejected_dir=tmp_path / "rejected",
+                 sockseek_factory=lambda wd: FakeSockseek(wd, RESULTS, TRANSFERS), nicotine_check=lambda: False,
+                 background=False)
+    app = create_app(session_factory(tmp_path / "t.db"), cfg)
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    srv = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    threading.Thread(target=srv.run, daemon=True).start()
+    while not srv.started:
+        time.sleep(0.05)
+    csv = tmp_path / "tch3.csv"
+    csv.write_text(CSV, encoding="utf-8")
+    yield f"http://127.0.0.1:{port}", lib, csv
+    srv.should_exit = True
+
+
+def test_playlist_to_crate_without_terminal(server, page):
+    url, lib, csv = server
+    SHOTS.mkdir(exist_ok=True)
+    errors = []
+    page.on("console", lambda m: m.type == "error" and errors.append(m.text))
+    page.on("pageerror", lambda e: errors.append(str(e)))
+
+    page.goto(url)
+    page.request.post(f"{url}/api/library/scan")
+    page.set_input_files("[data-testid=csv-input]", str(csv))
+    page.get_by_test_id("import-msg").wait_for()
+    msg = page.get_by_test_id("import-msg").inner_text()
+    assert "5 tracks" in msg and "1 already in your library" in msg and "4 to download" in msg
+    page.screenshot(path=str(SHOTS / "1-playlists.png"), full_page=True)
+
+    row = page.get_by_test_id("playlist-tch3")
+    row.get_by_test_id("crate-input").fill("06112026")
+    row.get_by_test_id("download-btn").click()
+
+    page.wait_for_url("**#jobs")
+    page.wait_for_function("document.querySelector('[data-testid=job-state]')?.textContent === 'finished'", timeout=15000)
+    result = page.get_by_test_id("job-result").inner_text()
+    assert "2" in result and "filed into 06112026" in result
+    assert "FILED" in page.get_by_test_id("job-log").inner_text()
+    page.screenshot(path=str(SHOTS / "2-job.png"), full_page=True)
+    assert (lib / "06112026" / "SOLYD - Hot Beats (Extended Mix).wav").exists()
+
+    page.get_by_test_id("tab-review").click()
+    card = page.get_by_test_id("review-card")
+    card.wait_for()
+    assert "Obsessed" in card.inner_text() and "duration" in card.inner_text()
+    page.screenshot(path=str(SHOTS / "3-review.png"), full_page=True)
+    card.get_by_role("button", name="It's right: file it").click()
+    page.get_by_test_id("review-empty").wait_for()
+    assert (lib / "06112026" / "KUSS & GRUV - Obsessed.wav").exists()
+
+    page.get_by_test_id("tab-failed").click()
+    page.get_by_text("Nobody is sharing it right now").wait_for()
+    assert "Selva" in page.content() and "Obsessed" not in page.locator("table").inner_text()
+    page.screenshot(path=str(SHOTS / "4-failed.png"), full_page=True)
+
+    page.get_by_test_id("tab-library").click()
+    page.get_by_test_id("lib-search").fill("hot beats")
+    page.wait_for_function("document.querySelector('[data-testid=lib-total]')?.textContent.startsWith('1 item')")
+    page.get_by_test_id("lib-search").fill("")
+    page.wait_for_function("document.querySelector('[data-testid=lib-total]')?.textContent.startsWith('5 items')")
+    page.screenshot(path=str(SHOTS / "5-library.png"), full_page=True)
+
+    assert errors == [], errors
