@@ -18,7 +18,7 @@ from .ranking import Ranked, rank
 from .scanner import index_file, measure_duration
 from .sockseek import DownloadOutcome, Query, Sockseek
 
-QUOTA_WORDS = ("too many", "quota", "banned")
+MAX_PER_USER_PER_ROUND = 3
 
 
 def nicotine_running() -> bool:
@@ -33,7 +33,7 @@ class PreflightError(RuntimeError):
 class TrackPlan:
     track: Track
     candidates: list[Ranked] = field(default_factory=list)
-    tried: int = 0
+    attempted: set[int] = field(default_factory=set)
     raw_results: int = 0
     dropped: dict[str, int] = field(default_factory=dict)
     last_failure: str | None = None
@@ -132,14 +132,19 @@ def run(
     bad_users: set[str] = set()
     for rnd in range(1, rounds + 1):
         batch: list[tuple[TrackPlan, Ranked]] = []
+        per_user: Counter = Counter()
         for p in plans:
             if p.done:
                 continue
-            while p.tried < len(p.candidates) and p.candidates[p.tried].result.username in bad_users:
-                p.tried += 1
-            if p.tried < len(p.candidates):
-                batch.append((p, p.candidates[p.tried]))
-                p.tried += 1
+            # Best untried source whose peer has not failed this job, spreading picks across peers.
+            pick = next((i for i, c in enumerate(p.candidates)
+                         if i not in p.attempted and c.result.username not in bad_users
+                         and per_user[c.result.username] < MAX_PER_USER_PER_ROUND), None)
+            if pick is None:
+                continue
+            per_user[p.candidates[pick].result.username] += 1
+            p.attempted.add(pick)
+            batch.append((p, p.candidates[pick]))
         if not batch:
             break
         log(f"round {rnd}: downloading {len(batch)} files")
@@ -163,7 +168,7 @@ def run(
                 t.status_reason = f"no acceptable result among {p.raw_results}: {top}"
         else:
             t.status = TrackStatus.failed_transfer
-            t.status_reason = f"all {p.tried} tried downloads failed: {p.last_failure}"
+            t.status_reason = f"{len(p.attempted)} of {len(p.candidates)} sources tried, all failed: {p.last_failure}"
         t.retry_count = (t.retry_count or 0) + 1
         t.next_retry_at = now() + RETRY_AFTER[t.status]
         rep.failed.append((t, t.status_reason))
@@ -180,8 +185,8 @@ def _handle(s, job, p: TrackPlan, cand: Ranked, o: DownloadOutcome, crate_dir: P
     if not o.succeeded or not o.local_path or not Path(o.local_path).exists():
         attempt.error = o.failure
         p.last_failure = o.failure
-        if o.failure and any(w in o.failure.lower() for w in QUOTA_WORDS):
-            bad_users.add(r.username)
+        # One strike: a stalled or refusing peer costs minutes per try, so skip it for the rest of the job.
+        bad_users.add(r.username)
         return
     local = Path(o.local_path)
     measured = measure_duration(local)

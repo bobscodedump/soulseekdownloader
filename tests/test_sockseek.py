@@ -60,3 +60,13 @@ def test_outcomes_report_stale_link_download():
 
 def test_parse_json_arrays_handles_empty_lists():
     assert parse_json_arrays('[]\n[{"a":1}]\n[]') == [[], [{"a": 1}], []]
+
+
+def test_failure_details_from_real_stderr():
+    from djlib.sockseek import parse_failure_details
+    stale = parse_failure_details((FIX / "stderr_link_stale.log").read_text())
+    assert stale[("TheTailorWandersQuietly", "01-sicion-dancing_shadows_(original_mix).flac")].startswith("Download attempt became stale")
+    quota = parse_failure_details(
+        "[warn] [jobs] [15] SongJob: download attempt failed: Luigi Madonna, BCCO - Flowz: DJ-Promo\\..\\EDM 1609\\Techno\\Luigi Madonna, BCCO - Flowz (Original Mix) [www.dj-promo.org].mp3\n"
+        "    Output: /x/y.mp3.incomplete\n    Attempt: 1/1\n    TransferRejectedException: Transfer rejected: Too many files\n")
+    assert quota[("DJ-Promo", "Luigi Madonna, BCCO - Flowz (Original Mix) [www.dj-promo.org].mp3")] == "Transfer rejected: Too many files"

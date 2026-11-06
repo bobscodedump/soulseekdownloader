@@ -1,0 +1,11 @@
+[cli] Starting CLI session in local mode
+[soulseek] Logging in as brbinacoma..
+[001] ExtractJob: List: Input: spike/m2/links.txt
+[002] Job List: running: links
+[003] ExtractJob: Soulseek: Input: slsk://TheTailorWandersQuietly/@@music/Techno/202605/Sicion-Dancing_Shadows-(GRUVEP6)-16BIT-WEB-FLAC-2026-B7R/01-sicion-dancing_shadows_(original_mix).flac
+[004] SongJob: downloading: @@music\Techno\202605\Sicion-Dancing_Shadows-(GRUVEP6)-16BIT-WEB-FLAC-2026-B7R\01-sicion-dancing_shadows_(original_mix): TheTailorWandersQuietly\..\202605\Sicion-Dancing_Shadows-(GRUVEP6)-16BIT-WEB-FLAC-2026-B7R\01-sicion-dancing_shadows_(original_mix).flac
+[004] SongJob: failed [All downloads failed]: @@music\Techno\202605\Sicion-Dancing_Shadows-(GRUVEP6)-16BIT-WEB-FLAC-2026-B7R\01-sicion-dancing_shadows_(original_mix): TheTailorWandersQuietly\..\202605\Sicion-Dancing_Shadows-(GRUVEP6)-16BIT-WEB-FLAC-2026-B7R\01-sicion-dancing_shadows_(original_mix).flac
+    Error: Download attempt became stale after 120000ms without peer transfer activity: TheTailorWandersQuietly\@@music\Techno\202605\Sicion-Dancing_Shadows-(GRUVEP6)-16BIT-WEB-FLAC-2026-B7R\01-sicion-dancing_shadows_(original_mix).flac
+[002] Job List: failed [Child jobs failed]: links
+    Error: One or more child jobs failed.
+[cli] Completed: 0 succeeded, 1 failed.

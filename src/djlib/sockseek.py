@@ -12,6 +12,7 @@ import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -88,7 +89,33 @@ def parse_events(text: str) -> list[dict]:
     return out
 
 
-_STALE = re.compile(r"Error: (?P<msg>(Download attempt became stale|Transfer rejected: [^\n]+|[^\n]*timed out[^\n]*))")
+_ATTEMPT = re.compile(r"(?:download attempt failed|failed \[[^\]]+\]): .*?: (?P<user>[^\\:]+)\\(?P<path>.+)$")
+_DETAIL = re.compile(r"^\s+(?:\w*Exception|Error): (?P<msg>.+)$")
+
+
+def _basename(remote: str) -> str:
+    return remote.replace("/", "\\").rsplit("\\", 1)[-1]
+
+
+def parse_failure_details(stderr: str) -> dict[tuple[str, str], str]:
+    """(user, file name) -> first error message, from sockseek's stderr.
+
+    Paths in those lines are shortened ("user\\..\\folder\\file"), so the file name is the key.
+    """
+    out, current = {}, None
+    for line in stderr.splitlines():
+        m = _ATTEMPT.search(line)
+        if m:
+            current = (m["user"].strip(), _basename(m["path"].strip()))
+            continue
+        d = _DETAIL.match(line)
+        if d and current and current not in out and not d["msg"].startswith(("One or more child", "Some child")):
+            out[current] = d["msg"].strip()
+        if d and "stale" in d["msg"]:  # stale lines carry the full user\path themselves
+            m2 = re.search(r"activity: (?P<user>[^\\]+)\\(?P<path>.+)$", d["msg"])
+            if m2:
+                out.setdefault((m2["user"], _basename(m2["path"])), d["msg"].split(":")[0])
+    return out
 
 
 class Sockseek:
@@ -117,6 +144,7 @@ class Sockseek:
             str(path), "--input-type=csv", "--artist-col", "Artist", "--title-col", "Title", "--album-col", "Album",
             "--length-tol=-1", "--concurrent-jobs", "1", "--search-timeout", "15000", "--print", "json-all",
         ], timeout=60 * 60)
+        self._keep_log("search", out, err)
         arrays = parse_json_arrays(out)
         if len(arrays) != len(queries):
             raise RuntimeError(f"sockseek returned {len(arrays)} result lists for {len(queries)} queries: {err[-500:]}")
@@ -140,7 +168,13 @@ class Sockseek:
             str(links), "--input-type=list", "--progress-json", "--max-stale-time", str(stale_ms),
             "-o", str(out_dir), "--no-write-index",
         ], timeout=4 * 60 * 60)
+        self._keep_log("download", out, err)
         return self.outcomes(results, parse_events(out), err)
+
+    def _keep_log(self, kind: str, out: str, err: str) -> None:
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        (self.workdir / "logs").mkdir(exist_ok=True)
+        (self.workdir / "logs" / f"{kind}-{stamp}.log").write_text(err + "\n--- stdout ---\n" + out, encoding="utf-8")
 
     @staticmethod
     def outcomes(results: list[SearchResult], events: list[dict], stderr: str = "") -> list[DownloadOutcome]:
@@ -150,15 +184,13 @@ class Sockseek:
             if e.get("type") == "track_state" and e["data"].get("lifecycleState") == "Terminal":
                 d = e["data"]
                 final[(d.get("username", ""), d.get("filename", ""))] = d
-        errors = {}
-        for m in _STALE.finditer(stderr):
-            errors.setdefault("last", m["msg"])
+        details = parse_failure_details(stderr)
         out = []
         for r in results:
             d = final.get((r.username, r.filename))
             if d and d.get("terminalOutcome") == "Succeeded":
                 out.append(DownloadOutcome(r.username, r.filename, True, d.get("downloadPath"), None))
             else:
-                reason = (d or {}).get("failureReason") or "no result reported"
+                reason = details.get((r.username, _basename(r.filename))) or (d or {}).get("failureReason") or "no result reported"
                 out.append(DownloadOutcome(r.username, r.filename, False, None, reason))
         return out

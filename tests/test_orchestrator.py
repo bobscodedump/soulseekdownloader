@@ -160,3 +160,35 @@ def test_filing_never_overwrites(env):
     fake = FakeSockseek(tmp / "work", RESULTS, TRANSFERS)
     run(s, tracks, lib, "06112026", fake, tmp / "rejected", log=lambda m: None, is_nicotine_running=lambda: False)
     assert (lib / "06112026" / "11-funkhaus-lumen (2).mp3").exists()
+
+
+def test_one_slow_peer_cannot_sink_the_job(env):
+    """Real failure from 6 Nov: one peer ranked first for 6 tracks and stalled on every one."""
+    s, lib, tracks, tmp = env
+    results, transfers = {}, {}
+    for t in tracks:
+        if t.title == "Flash":
+            continue
+        key = f"{t.artist} - {t.title}"
+        slow = R("slowpeer", rf"m\{t.artist} - {t.title}.flac", t.duration_s)
+        good = R(f"ok-{t.id}", rf"m\{t.artist} - {t.title}.mp3", t.duration_s, 320)
+        results[key] = [slow, good]
+        transfers[(slow.username, slow.filename)] = "Download attempt became stale after 120000ms"
+        transfers[(good.username, good.filename)] = t.duration_s
+    fake = FakeSockseek(tmp / "work", results, transfers)
+    rep = run(s, tracks, lib, "06112026", fake, tmp / "rejected", rounds=2, log=lambda m: None,
+              is_nicotine_running=lambda: False)
+    slow_tries = [u for u, _ in fake.downloaded if u == "slowpeer"]
+    # Round 1 runs in parallel before anyone has failed, so the cap (3) bounds the damage; after that, never again.
+    assert len(slow_tries) == 3
+    assert len(rep.filed) == 4  # everyone else succeeds within 2 rounds
+
+
+def test_round_caps_picks_per_peer(env):
+    s, lib, tracks, tmp = env
+    results = {f"{t.artist} - {t.title}": [R("bigpeer", rf"m\{t.artist} - {t.title}.flac", t.duration_s)]
+               for t in tracks if t.title != "Flash"}
+    transfers = {(r[0].username, r[0].filename): None for r in results.values()}
+    fake = FakeSockseek(tmp / "work", results, transfers)
+    run(s, tracks, lib, "x", fake, tmp / "rejected", rounds=1, log=lambda m: None, is_nicotine_running=lambda: False)
+    assert len(fake.downloaded) == 3  # MAX_PER_USER_PER_ROUND
