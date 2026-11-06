@@ -52,7 +52,7 @@ export default function Failed({ onChange }: { onChange: () => void }) {
                   <td className="num">{r.tries}/{r.max_tries}</td>
                   <td className="small">{r.status === "buy" || !r.next_retry_at ? "–"
                     : new Date(r.next_retry_at).toLocaleDateString(undefined, { day: "numeric", month: "short" })}</td>
-                  <td className="muted small reasoncell">{r.reason}</td>
+                  <td className="muted small reasoncell" title={r.reason_full ?? ""}>{r.reason}</td>
                   <td className="actions">
                     <button onClick={() => act(r, "retry")}>Retry</button>
                     <a className="button" href={r.buy.bandcamp} target="_blank" rel="noreferrer">Bandcamp</a>

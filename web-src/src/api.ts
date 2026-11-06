@@ -31,7 +31,7 @@ export interface ReviewItem {
   wanted_duration: number | null; file: string; path: string; reason: string | null;
 }
 export interface FailedRow {
-  id: number; artist: string; title: string; version: string | null; status: Status; reason: string | null;
+  id: number; artist: string; title: string; version: string | null; status: Status; reason: string | null; reason_full: string | null;
   tries: number; max_tries: number; next_retry_at: string | null; buy: { bandcamp: string; beatport: string };
 }
 export interface Settings { library_root: string; auto_retry: boolean; rejected_dir: string }

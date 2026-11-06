@@ -23,6 +23,7 @@ from .ingest_csv import import_csv
 from .jobs import JobRunner
 from .library import mark_owned, playlist_tracks
 from .normalize import length_class, strip_length
+from .reasons import summarize
 from .orchestrator import run as run_download
 from .retries import MAX_RETRIES, run_due
 from .scanner import scan
@@ -206,7 +207,7 @@ def create_app(Session_: sessionmaker[Session], cfg: Config) -> FastAPI:
         with Session_() as s:
             rows = s.scalars(select(Track).where(Track.status.in_(FAILED)).order_by(Track.status, Track.artist)).all()
             return [{"id": t.id, "artist": t.artist, "title": t.title, "version": t.version, "status": t.status.value,
-                     "reason": t.status_reason, "tries": t.retry_count, "max_tries": MAX_RETRIES,
+                     "reason": summarize(t.status_reason), "reason_full": t.status_reason, "tries": t.retry_count, "max_tries": MAX_RETRIES,
                      "next_retry_at": t.next_retry_at.isoformat() if t.next_retry_at else None,
                      "buy": {"bandcamp": f"https://bandcamp.com/search?q={quote_plus(t.artist + ' ' + t.title)}",
                              "beatport": f"https://www.beatport.com/search?q={quote_plus(t.artist + ' ' + t.title)}"}}

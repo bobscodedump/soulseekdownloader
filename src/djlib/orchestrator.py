@@ -15,6 +15,7 @@ from .failures import RETRY_AFTER
 from .library import FileIndex, files_in, record_link, wanted
 from .matcher import MATCH, verify_download
 from .ranking import Ranked, rank
+from .reasons import summarize
 from .scanner import index_file, measure_duration
 from .sockseek import DownloadOutcome, Query, Sockseek
 
@@ -168,7 +169,7 @@ def run(
                 t.status_reason = f"no acceptable result among {p.raw_results}: {top}"
         else:
             t.status = TrackStatus.failed_transfer
-            t.status_reason = f"{len(p.attempted)} of {len(p.candidates)} sources tried, all failed: {p.last_failure}"
+            t.status_reason = summarize(f"{len(p.attempted)} of {len(p.candidates)} sources tried, all failed: {p.last_failure}")
         note_failure(t)
         t.next_retry_at = now() + RETRY_AFTER[t.status]
         rep.failed.append((t, t.status_reason))
