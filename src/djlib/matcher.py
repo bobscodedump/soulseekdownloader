@@ -6,7 +6,9 @@ from pathlib import PureWindowsPath, PurePosixPath
 
 from rapidfuzz import fuzz
 
-from .normalize import VERSION_WORDS, fold, split_artists, split_version, tokens, version_sig, words
+from .normalize import (
+    LENGTH_RANK, VERSION_WORDS, identity_sig, length_class, split_artists, split_version, strip_length, tokens, words,
+)
 
 DURATION_TOL_S = 5.0
 MATCH, REVIEW, NO_MATCH = "match", "review", "no_match"
@@ -65,14 +67,32 @@ def _artist_score(artist: str, haystack: str) -> float:
 
 
 def _version_ok(w: Wanted, name: str) -> tuple[bool, str | None]:
-    want = version_sig(w.version)
-    have_words = tokens(name)
+    """Remixes and reworks must match; extended / original / short are interchangeable."""
+    want = identity_sig(w.version)
+    have_words = tokens(strip_length(name))
     if want - have_words:
         return False, f"version words missing: {' '.join(sorted(want - have_words))}"
     extra = (have_words & VERSION_WORDS) - want - tokens(w.base_title) - tokens(w.artist)
     if extra:
         return False, f"file looks like another version: {' '.join(sorted(extra))}"
     return True, None
+
+
+def _duration_ok(w: Wanted, name: str, duration_s: float | None) -> tuple[bool | None, str | None]:
+    """Compare lengths only between the same length variant; an extended file may be longer, never shorter."""
+    if not w.duration_s or duration_s is None:
+        return None, None
+    want_cls = length_class(w.version) or "original"
+    have_cls = length_class(name) or "original"
+    diff = duration_s - w.duration_s
+    if want_cls == have_cls:
+        ok = abs(diff) <= DURATION_TOL_S
+        return ok, None if ok else f"duration off by {abs(diff):.0f}s"
+    if LENGTH_RANK[have_cls] > LENGTH_RANK[want_cls]:
+        ok = diff >= -DURATION_TOL_S
+        return ok, None if ok else f"{have_cls} version shorter than wanted by {-diff:.0f}s"
+    ok = diff <= DURATION_TOL_S
+    return ok, None if ok else f"{have_cls} version longer than wanted by {diff:.0f}s"
 
 
 def match(w: Wanted, c: Candidate) -> Result:
@@ -84,12 +104,9 @@ def match(w: Wanted, c: Candidate) -> Result:
     vok, vwhy = _version_ok(w, c.name)
     if vwhy:
         reasons.append(vwhy)
-    dur_ok = None
-    if w.duration_s and c.duration_s:
-        diff = abs(w.duration_s - c.duration_s)
-        dur_ok = diff <= DURATION_TOL_S
-        if not dur_ok:
-            reasons.append(f"duration off by {diff:.0f}s")
+    dur_ok, dwhy = _duration_ok(w, c.name, c.duration_s)
+    if dwhy:
+        reasons.append(dwhy)
 
     # The file names its own artist and none of ours is in it: a different song with a similar title.
     other_artist = bool(c.artist) and as_ < 0.5 and _artist_score(w.artist, c.artist) == 0
@@ -134,12 +151,12 @@ def verify_download(w: Wanted, remote_path: str, measured_duration_s: float | No
     vok, vwhy = _version_ok(w, stem)
     if vwhy:
         reasons.append(vwhy)
-    if w.duration_s and measured_duration_s is not None:
-        diff = abs(w.duration_s - measured_duration_s)
-        if diff > DURATION_TOL_S:
-            reasons.append(f"duration off by {diff:.0f}s")
-    elif w.duration_s:
+    if w.duration_s and measured_duration_s is None:
         reasons.append("could not measure duration")
+    else:
+        _, dwhy = _duration_ok(w, stem, measured_duration_s)
+        if dwhy:
+            reasons.append(dwhy)
     ok = not reasons
     return Result(MATCH if ok else REVIEW, 1.0 if ok else 0.0, 1.0 if title_ok else 0.0, round(as_, 3), reasons)
 

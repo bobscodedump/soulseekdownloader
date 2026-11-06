@@ -29,10 +29,27 @@ def test_same_title_different_song_is_not_a_match(artist, title, file):
     assert match(Wanted(artist, title), cand(file)).decision == NO_MATCH
 
 
-def test_different_version_goes_to_review_not_match():
-    w = Wanted("Lightforce, KSN", "Join Me - Schranz Rework")
-    r = match(w, cand("shranz/01. Join Me - Extended Schranz Rework.mp3"))
-    assert r.decision == REVIEW and any("another version" in x for x in r.reasons)
+def test_extended_counts_as_the_same_rework():
+    """User rule: extended > original > short, all accepted. Only remix/rework identity must match."""
+    w = Wanted("Lightforce, KSN", "Join Me - Schranz Rework", duration_s=198)
+    c = Candidate(name="01. Join Me - Extended Schranz Rework", artist="Lightforce, KSN", duration_s=272)
+    r = match(w, c)
+    assert r.decision == MATCH, r
+
+
+def test_short_mix_wanted_original_mix_found_is_accepted():
+    w = Wanted("SOLYD, Stoltenhoff", "Hot Beats - Short Mix", duration_s=241)
+    assert match(w, Candidate(name="Stoltenhoff, SOLYD - Hot Beats  Original Mix", duration_s=302)).decision == MATCH
+
+
+def test_extended_file_shorter_than_wanted_is_suspicious():
+    w = Wanted("Funkhaus", "Lumen", duration_s=360)
+    assert match(w, Candidate(name="funkhaus - lumen (extended mix)", duration_s=200)).decision != MATCH
+
+
+def test_remix_identity_still_strict():
+    w = Wanted("KOBOSIL, Ueberrest", "Cryptic - Kobosil Hart Mix", duration_s=302)
+    assert match(w, Candidate(name="ueberrest - cryptic (extended mix)", duration_s=400)).decision != MATCH
 
 
 def test_remix_file_is_not_the_original():
@@ -117,3 +134,13 @@ def test_numbered_titles_must_match_their_number():
     assert match(w, cand("17102026/06.SKETCH #6 (Original Mix).mp3", duration=312)).decision == NO_MATCH
     w6 = Wanted("Tarkno, Remco Beekwilder", "SKETCH #6 - Original Mix")
     assert match(w6, Candidate(name="06.SKETCH #6 (Original Mix)", artist="Tarkno & Remco Beekwilder")).decision == MATCH
+
+
+@pytest.mark.parametrize("text,cls", [
+    ("Extended Schranz Rework", "extended"), ("Original Radio Edit", "short"), ("Short Mix", "short"),
+    ("Original Mix", "original"), ("Kobosil Hart Mix", None), ("02-stoltenhoff_and_solyd-hot_beats_(extended_mix)", "extended"),
+    ("Club Mix", "extended"), (None, None),
+])
+def test_length_class(text, cls):
+    from djlib.normalize import length_class
+    assert length_class(text) == cls

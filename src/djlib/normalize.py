@@ -55,6 +55,37 @@ def version_sig(text: str | None) -> set[str]:
     return tokens(text or "") - {"mix", "version"}
 
 
+# Length variants of the same recording. The user prefers extended > original > short, but accepts all.
+LENGTH_RANK = {"extended": 3, "original": 2, "short": 1}
+_LENGTH_PHRASES = [
+    ("extended", re.compile(r"\b(extended|club)(\s+(mix|edit|version|vocal))?\b|\bfull\s+length\b", re.I)),
+    ("short", re.compile(r"\b(short|radio)(\s+(mix|edit|version))?\b", re.I)),
+    ("original", re.compile(r"\boriginal(\s+(mix|version))?\b", re.I)),
+]
+
+
+def length_class(text: str | None) -> str | None:
+    """'Extended Schranz Rework' -> 'extended'; 'Original Radio Edit' -> 'short'; 'Kobosil Hart Mix' -> None."""
+    t = fold(text or "").replace("_", " ")
+    for name, rx in _LENGTH_PHRASES:
+        if rx.search(t):
+            return name
+    return None
+
+
+def strip_length(text: str | None) -> str:
+    """Remove length-variant phrases, leaving what identifies a version: 'Extended Schranz Rework' -> 'Schranz Rework'."""
+    t = fold(text or "").replace("_", " ")
+    for _, rx in _LENGTH_PHRASES:
+        t = rx.sub(" ", t)
+    return t
+
+
+def identity_sig(version: str | None) -> set[str]:
+    """Version tokens that make it a different recording (remixer, rework), ignoring length variants."""
+    return version_sig(strip_length(version))
+
+
 def split_artists(artist: str) -> list[str]:
     parts = [p.strip() for p in _ARTIST_SPLIT.split(artist or "") if p and p.strip()]
     return parts or [artist]
