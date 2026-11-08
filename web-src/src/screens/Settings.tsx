@@ -8,6 +8,9 @@ export default function SettingsScreen({ onChange }: { onChange: () => void }) {
   const [ssPath, setSsPath] = useState("");
   const [msg, setMsg] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
 
+  const [user, setUser] = useState("");
+  const [pass, setPass] = useState("");
+  const [busy, setBusy] = useState(false);
   useEffect(() => { api.settings().then((x) => { setS(x); setRoot(x.library_root); setSsPath(x.sockseek_path); }); }, []);
   if (!s) return <p className="muted">Loading…</p>;
 
@@ -19,6 +22,12 @@ export default function SettingsScreen({ onChange }: { onChange: () => void }) {
       onChange();
     } catch (e) { setMsg({ kind: "error", text: (e as Error).message }); }
   };
+  const run = async (f: () => Promise<Settings>, done: string) => {
+    setBusy(true);
+    try { setS(await f()); setMsg({ kind: "ok", text: done }); onChange(); }
+    catch (e) { setMsg({ kind: "error", text: (e as Error).message }); }
+    setBusy(false);
+  };
   const rescan = async () => {
     const r = await api.scan();
     setMsg({ kind: "ok", text: `Scanned ${r.seen} files: ${r.added} new, ${r.moved} moved, ${r.removed} removed. ${r.needs_tags} need tags.` });
@@ -28,6 +37,25 @@ export default function SettingsScreen({ onChange }: { onChange: () => void }) {
   return (
     <section className="settings">
       {msg && <div className={`banner ${msg.kind}`}>{msg.text}</div>}
+      <div className="setup" data-testid="soulseek-setup">
+        <h3>Soulseek setup</h3>
+        <p className="muted small">Downloads need two things: the downloader program, and your free Soulseek account
+          (make one at <a href="https://www.slsknet.org" target="_blank" rel="noreferrer">slsknet.org</a>; any new
+          username and password work). Your password stays on this Mac.</p>
+        <div className="row">
+          <span>{s.sockseek_ok ? "✓ Downloader installed" : "✗ Downloader missing"}</span>
+          {!s.sockseek_ok && <button disabled={busy} onClick={() => run(api.installSockseek, "Downloader installed.")}>
+            {busy ? "Downloading…" : "Install downloader"}</button>}
+        </div>
+        <div className="row">
+          <input placeholder="Soulseek username" value={user} onChange={(e) => setUser(e.target.value)} data-testid="ss-user" />
+          <input type="password" placeholder={s.soulseek_user ? "New password" : "Password"} value={pass}
+                 onChange={(e) => setPass(e.target.value)} data-testid="ss-pass" />
+          <button disabled={busy || !user || !pass} onClick={() => run(() => api.saveLogin(user, pass), "Login saved.").then(() => setPass(""))}>
+            Save login</button>
+        </div>
+        <span className="muted small">{s.soulseek_user ? `Signed in as ${s.soulseek_user}.` : "No Soulseek login saved yet."}</span>
+      </div>
       <label>DJ folder
         <div className="row">
           <input value={root} onChange={(e) => setRoot(e.target.value)} className="grow" />
@@ -36,13 +64,13 @@ export default function SettingsScreen({ onChange }: { onChange: () => void }) {
         </div>
         <span className="muted small">Read-only scan; the app rescans every minute. Downloads are filed into crate folders inside it.</span>
       </label>
-      <label>sockseek program
+      <label>Downloader location (leave as is)
         <div className="row">
           <input value={ssPath} onChange={(e) => setSsPath(e.target.value)} className="grow" data-testid="sockseek-path" />
           <button onClick={() => save({ sockseek_path: ssPath })} disabled={ssPath === s.sockseek_path}>Save</button>
         </div>
         <span className={`small ${s.sockseek_ok ? "muted" : "error"}`}>
-          {s.sockseek_ok ? "Found. Downloads use your Soulseek login from ~/.config/sockseek/sockseek.conf."
+          {s.sockseek_ok ? "Found."
                          : "Not found at this path: downloads cannot start until it is set."}
         </span>
       </label>

@@ -32,6 +32,7 @@ from .reasons import summarize
 from .orchestrator import run as run_download
 from .retries import MAX_RETRIES, run_due
 from .orchestrator import PreflightError
+from . import setup
 from .sockseek import SOCKSEEK, Sockseek, subprocess_runner
 from . import duplicates as dupes_mod
 from .fingerprint import fpcalc_path
@@ -58,7 +59,14 @@ class Config:
     export_dir: Path | None = None  # Rekordbox XML + M3U8; None = data_dir / "exports"
     replaced_dir: Path | None = None  # MP3s replaced by lossless upgrades; None = data_dir / "replaced"
     duplicates_dir: Path | None = None  # extra copies moved out of the library; None = data_dir / "duplicates"
+    sockseek_fetch: Callable[[str], bytes] | None = None  # tests; None = download from GitHub
+    sockseek_conf: Path | None = None  # tests; None = ~/.config/sockseek/sockseek.conf
     fpcalc: str | None = "auto"  # Chromaprint fpcalc; "auto" = look on PATH / Homebrew, None = not installed
+
+
+class LoginIn(BaseModel):
+    username: str
+    password: str
 
 
 class SettingsIn(BaseModel):
@@ -97,6 +105,7 @@ class StatusIn(BaseModel):
 
 def default_config(port: int = 8765) -> Config:
     from .db import db_path
+    (Path.home() / "Desktop" / "DJ").mkdir(parents=True, exist_ok=True)  # first run: the folder must exist
     return Config(library_root=Path.home() / "Desktop" / "DJ", data_dir=db_path().parent,
                   rejected_dir=Path.home() / "Desktop" / "soulseek" / "downloads" / "rejected", port=port,
                   export_dir=Path.home() / "Desktop" / "soulseek" / "exports",
@@ -119,7 +128,15 @@ def create_app(Session_: sessionmaker[Session], cfg: Config) -> FastAPI:
 
     def sockseek_path(s: Session) -> Path:
         st = s.get(Setting, "sockseek_path")
-        return Path(st.value) if st else SOCKSEEK
+        if st:
+            return Path(st.value)
+        return managed() if managed().is_file() else SOCKSEEK
+
+    def managed() -> Path:
+        return cfg.data_dir / "bin" / "sockseek"
+
+    def conf() -> Path:
+        return cfg.sockseek_conf or setup.CONF
 
     def make_sockseek(s: Session) -> Sockseek:
         if cfg.sockseek_factory:
@@ -332,7 +349,8 @@ def create_app(Session_: sessionmaker[Session], cfg: Config) -> FastAPI:
         with Session_() as s:
             p = sockseek_path(s)
             return {"library_root": str(root(s)), "auto_retry": auto_retry(s), "rejected_dir": str(cfg.rejected_dir),
-                    "sockseek_path": str(p), "sockseek_ok": p.is_file() and os.access(p, os.X_OK)}
+                    "sockseek_path": str(p), "sockseek_ok": p.is_file() and os.access(p, os.X_OK),
+                    "soulseek_user": setup.soulseek_user(conf())}
 
     @app.get("/api/upgrades")
     def upgrades():
@@ -397,6 +415,25 @@ def create_app(Session_: sessionmaker[Session], cfg: Config) -> FastAPI:
                     raise HTTPException(400, f"not an executable file: {p}")
                 s.merge(Setting(key="sockseek_path", value=str(p.resolve())))
             s.commit()
+        return get_settings()
+
+    @app.post("/api/setup/sockseek")
+    def install_sockseek():
+        try:
+            path = setup.install_sockseek(cfg.sockseek_fetch or setup.download, managed())
+        except Exception as e:
+            raise HTTPException(502, f"Could not download sockseek ({e}). Check your internet connection.")
+        with Session_() as s:
+            s.merge(Setting(key="sockseek_path", value=str(path)))
+            s.commit()
+        return get_settings()
+
+    @app.put("/api/setup/soulseek")
+    def save_soulseek(body: LoginIn):
+        try:
+            setup.save_login(body.username, body.password, conf())
+        except ValueError as e:
+            raise HTTPException(400, str(e))
         return get_settings()
 
     @app.post("/api/library/scan")

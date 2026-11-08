@@ -208,3 +208,33 @@ def test_missing_sockseek_stops_with_clear_message(tmp_path):
     pl = upload(c)
     done = wait_job(c, c.post(f"/api/playlists/{pl['id']}/download", json={"crate": "x"}).json()["id"])
     assert done["state"] == "aborted" and "sockseek was not found" in done["result"]["error"]
+
+
+def test_first_run_setup_installs_sockseek_and_saves_login(tmp_path):
+    import io, os, stat, tarfile
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        body = b"#!/bin/sh\nexit 0\n"
+        info = tarfile.TarInfo("sockseek_3.0.6_osx-arm64/sockseek")
+        info.size = len(body)
+        tar.addfile(info, io.BytesIO(body))
+    conf = tmp_path / "cfg" / "sockseek.conf"
+    conf.parent.mkdir()
+    conf.write_text("concurrent-jobs = 1\npassword = old\n")
+    lib = tmp_path / "DJ"
+    lib.mkdir()
+    cfg = Config(library_root=lib, data_dir=tmp_path / "data", rejected_dir=tmp_path / "r", background=False,
+                 sockseek_fetch=lambda url: buf.getvalue(), sockseek_conf=conf)
+    c = TestClient(create_app(session_factory(tmp_path / "t.db"), cfg))
+
+    st = c.post("/api/setup/sockseek").json()
+    exe = tmp_path / "data" / "bin" / "sockseek"
+    assert st["sockseek_ok"] and st["sockseek_path"] == str(exe) and os.access(exe, os.X_OK)
+
+    assert c.put("/api/setup/soulseek", json={"username": "", "password": "x"}).status_code == 400
+    st = c.put("/api/setup/soulseek", json={"username": "dj_me", "password": "s3cret!"}).json()
+    assert st["soulseek_user"] == "dj_me" and "password" not in str(st)
+    text = conf.read_text()
+    assert "username = dj_me" in text and "password = s3cret!" in text and "old" not in text
+    assert "concurrent-jobs = 1" in text  # other settings survive
+    assert stat.S_IMODE(conf.stat().st_mode) == 0o600

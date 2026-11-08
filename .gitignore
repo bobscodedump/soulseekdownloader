@@ -8,3 +8,5 @@ web-src/node_modules/
 dist/
 build/
 *.spec
+.DS_Store
+*.log

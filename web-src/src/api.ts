@@ -49,7 +49,7 @@ export interface DupFile {
   duration: number | null; size: number; track: string | null;
 }
 export interface Duplicates { fpcalc: string | null; ran: boolean; duplicates_dir: string; groups: { files: DupFile[]; similarity: number }[] }
-export interface Settings { library_root: string; auto_retry: boolean; rejected_dir: string; sockseek_path: string; sockseek_ok: boolean }
+export interface Settings { library_root: string; auto_retry: boolean; rejected_dir: string; sockseek_path: string; sockseek_ok: boolean; soulseek_user: string | null }
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(path, init);
@@ -102,6 +102,8 @@ export const api = {
   spotifyImport: (url: string) => req<ImportResult>("/api/spotify/import", json("POST", { url })),
   settings: () => req<Settings>("/api/settings"),
   saveSettings: (s: Partial<Settings>) => req<Settings>("/api/settings", json("PUT", s)),
+  installSockseek: () => req<Settings>("/api/setup/sockseek", { method: "POST" }),
+  saveLogin: (username: string, password: string) => req<Settings>("/api/setup/soulseek", json("PUT", { username, password })),
   scan: () => req<{ seen: number; added: number; moved: number; removed: number; needs_tags: number }>(
     "/api/library/scan", { method: "POST" }),
 };
