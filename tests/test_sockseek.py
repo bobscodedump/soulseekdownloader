@@ -70,3 +70,19 @@ def test_failure_details_from_real_stderr():
         "[warn] [jobs] [15] SongJob: download attempt failed: Luigi Madonna, BCCO - Flowz: DJ-Promo\\..\\EDM 1609\\Techno\\Luigi Madonna, BCCO - Flowz (Original Mix) [www.dj-promo.org].mp3\n"
         "    Output: /x/y.mp3.incomplete\n    Attempt: 1/1\n    TransferRejectedException: Transfer rejected: Too many files\n")
     assert quota[("DJ-Promo", "Luigi Madonna, BCCO - Flowz (Original Mix) [www.dj-promo.org].mp3")] == "Transfer rejected: Too many files"
+
+
+def test_timeout_keeps_finished_files_and_reports_the_rest():
+    import pathlib
+    import tempfile
+    from djlib.sockseek import SearchResult, Sockseek, subprocess_runner
+    d = pathlib.Path(tempfile.mkdtemp())
+    exe = d / "slow"
+    exe.write_text("#!/bin/sh\necho started\nsleep 30\n")
+    exe.chmod(0o755)
+    code, out, err = subprocess_runner(exe)([], timeout=1)
+    assert code == 124 and out.strip() == "started"
+
+    r = SearchResult("u", r"x\a.flac", 200, 1, None, True, 0.0)
+    outs = Sockseek(lambda args, timeout=None: (124, "", ""), d).download([r], d / "out")
+    assert not outs[0].succeeded and outs[0].failure == "timed out waiting for the peer"

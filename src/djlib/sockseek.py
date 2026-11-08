@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Callable, Protocol
 
 SOCKSEEK = Path.home() / "Desktop" / "soulseek" / "sockseek" / "sockseek"
+TIMED_OUT = 124
 TEST_QUERY = "Daft Punk - Around the World"
 
 
@@ -61,7 +62,11 @@ class Runner(Protocol):
 
 def subprocess_runner(binary: Path = SOCKSEEK) -> Runner:
     def run(args, timeout=None):
-        p = subprocess.run([str(binary), *args], capture_output=True, text=True, timeout=timeout)
+        try:
+            p = subprocess.run([str(binary), *args], capture_output=True, text=True, timeout=timeout)
+        except subprocess.TimeoutExpired as e:  # sockseek is killed; keep what it printed so finished files still count
+            dec = lambda b: b.decode("utf-8", "replace") if isinstance(b, bytes) else (b or "")
+            return TIMED_OUT, dec(e.stdout), dec(e.stderr)
         return p.returncode, p.stdout, p.stderr
     return run
 
@@ -167,9 +172,14 @@ class Sockseek:
         code, out, err = self.run([
             str(links), "--input-type=list", "--progress-json", "--max-stale-time", str(stale_ms),
             "-o", str(out_dir), "--no-write-index",
-        ], timeout=4 * 60 * 60)
+        ], timeout=min(2 * 60 * 60, 10 * 60 + 4 * 60 * len(results)))  # a peer that never answers must not block the app
         self._keep_log("download", out, err)
-        return self.outcomes(results, parse_events(out), err)
+        outs = self.outcomes(results, parse_events(out), err)
+        if code == TIMED_OUT:
+            for o in outs:
+                if not o.succeeded and o.failure == "no result reported":
+                    o.failure = "timed out waiting for the peer"
+        return outs
 
     def _keep_log(self, kind: str, out: str, err: str) -> None:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
