@@ -209,3 +209,33 @@ def test_review_link_upgrades_to_owned_without_crash(env):
         is_nicotine_running=lambda: False)
     links = s.scalars(select(MatchLink).where(MatchLink.track_id == flash.id)).all()
     assert len(links) == 1 and links[0].method == "fuzzy" and flash.status is TrackStatus.owned
+
+
+def test_other_actions_are_not_blocked_while_searching_and_downloading(env):
+    """Regression: the job used to hold the database write lock during long searches, so every other action
+    (scan, import, settings) failed with 'database is locked' (HTTP 500)."""
+    import sqlite3
+    s, lib, tracks, tmp = env
+    wrote = []
+
+    def other_action():
+        c = sqlite3.connect(tmp / "t.db", timeout=0.5)
+        try:
+            c.execute("INSERT OR REPLACE INTO setting(key, value) VALUES (?, 'x')", (f"probe{len(wrote)}",))
+            c.commit()
+            wrote.append(True)
+        finally:
+            c.close()
+
+    class Slow(FakeSockseek):
+        def search(self, queries):
+            other_action()
+            return super().search(queries)
+
+        def download(self, results, out_dir):
+            other_action()
+            return super().download(results, out_dir)
+
+    run(s, tracks, lib, "06112026", Slow(tmp / "work", RESULTS, TRANSFERS), tmp / "rejected",
+        log=lambda m: None, is_nicotine_running=lambda: False)
+    assert len(wrote) >= 2  # during the search and during at least one download round

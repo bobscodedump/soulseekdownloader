@@ -188,7 +188,7 @@ def db_path() -> Path:
 def make_engine(path: Path | str | None = None):
     path = Path(path) if path else db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    engine = create_engine(f"sqlite:///{path}")
+    engine = create_engine(f"sqlite:///{path}", connect_args={"timeout": 30})
 
     @event.listens_for(engine, "connect")
     def _pragmas(conn, _):

@@ -23,7 +23,9 @@ MAX_PER_USER_PER_ROUND = 3
 
 
 def nicotine_running() -> bool:
-    return subprocess.run(["pgrep", "-if", "nicotine"], capture_output=True).returncode == 0
+    # The program itself (nicotine, Nicotine+.app), not any command line that merely mentions the word.
+    pattern = r"(^|/)(nicotine|nicotine\+|nicotine-plus)( |$)|Nicotine\+\.app"
+    return subprocess.run(["pgrep", "-if", pattern], capture_output=True).returncode == 0
 
 
 class PreflightError(RuntimeError):
@@ -115,6 +117,7 @@ def run(
     log(f"{len(rep.owned_before)} already owned, {len(todo)} to search")
 
     # 2. Search once per track (base title: sockseek needs every search word to appear), then rank.
+    s.commit()  # never hold the database write lock across a minutes-long search: it 500s every other action
     results = ss.search([Query(t.artist, t.title, None) for t in todo]) if todo else []
     plans = []
     for t, res in zip(todo, results):
@@ -197,7 +200,7 @@ def download_rounds(s: Session, job: DownloadJob, plans: list[TrackPlan], ss: So
             break
         log(f"round {rnd}: downloading {len(batch)} files")
         job.state = f"round {rnd}"
-        s.commit()
+        s.commit()  # also releases the write lock before the network transfer
         outcomes = ss.download([c.result for _, c in batch], staging)
         for (p, cand), o in zip(batch, outcomes):
             _handle(s, job, p, cand, o, rejected_dir, rep, bad_users, log, check, place, reject_note)
