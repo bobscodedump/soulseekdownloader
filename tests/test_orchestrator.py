@@ -36,9 +36,14 @@ class FakeSockseek:
     def test_search(self):
         return self.test_results
 
-    def search(self, queries):
+    def search(self, queries, on_progress=None):
         self.searched += [f"{q.artist} - {q.title}" for q in queries]
-        return [self.results.get(f"{q.artist} - {q.title}", []) for q in queries]
+        out = []
+        for i, q in enumerate(queries, 1):
+            out.append(self.results.get(f"{q.artist} - {q.title}", []))
+            if on_progress:
+                on_progress(i)
+        return out
 
     def download(self, results, out_dir):
         out = []
@@ -228,9 +233,9 @@ def test_other_actions_are_not_blocked_while_searching_and_downloading(env):
             c.close()
 
     class Slow(FakeSockseek):
-        def search(self, queries):
+        def search(self, queries, on_progress=None):
             other_action()
-            return super().search(queries)
+            return super().search(queries, on_progress)
 
         def download(self, results, out_dir):
             other_action()
@@ -239,3 +244,12 @@ def test_other_actions_are_not_blocked_while_searching_and_downloading(env):
     run(s, tracks, lib, "06112026", Slow(tmp / "work", RESULTS, TRANSFERS), tmp / "rejected",
         log=lambda m: None, is_nicotine_running=lambda: False)
     assert len(wrote) >= 2  # during the search and during at least one download round
+
+
+def test_job_log_shows_search_progress(env):
+    s, lib, tracks, tmp = env
+    lines = []
+    run(s, tracks, lib, "06112026", FakeSockseek(tmp / "work", RESULTS, TRANSFERS), tmp / "rejected",
+        log=lines.append, is_nicotine_running=lambda: False)
+    total = next(int(ln.split(" to search")[0].split(", ")[-1]) for ln in lines if ln.endswith(" to search"))
+    assert [ln for ln in lines if ln.startswith("searched ")] == [f"searched {i} of {total}" for i in range(1, total + 1)]

@@ -167,7 +167,8 @@ def run_upgrades(s: Session, file_ids: list[int], library_root: Path, ss: Sockse
     log(f"looking for lossless copies of {len(todo)} files")
 
     s.commit()  # release the write lock before the long search
-    results = ss.search([Query(c.track.artist, c.track.title, None) for c in todo]) if todo else []
+    results = ss.search([Query(c.track.artist, c.track.title, None) for c in todo],
+                        lambda n: log(f"searched {n} of {len(todo)}")) if todo else []
     plan_of: dict[int, Candidate] = {}
     for c, res in zip(todo, results):
         ok, dropped = plan_sources(same_recording(c), c.file.duration_s, res)

@@ -58,7 +58,7 @@ class Query:
 
 
 class Runner(Protocol):
-    def __call__(self, args: list[str], timeout: float | None = None) -> tuple[int, str, str]: ...
+    def __call__(self, args: list[str], timeout: float | None = None, on_line: Callable[[str], None] | None = None) -> tuple[int, str, str]: ...
 
 
 _RUNNING: set[subprocess.Popen] = set()
@@ -75,24 +75,40 @@ def cancel_running() -> int:
 
 
 def subprocess_runner(binary: Path = SOCKSEEK) -> Runner:
-    def run(args, timeout=None):
+    def run(args, timeout=None, on_line=None):
+        """Run sockseek. `on_line` gets each stdout line as it arrives (live progress)."""
         _CANCELLED.clear()
         p = subprocess.Popen([str(binary), *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         _RUNNING.add(p)
+        buf: dict[str, list[str]] = {"out": [], "err": []}
+
+        def pump(stream, key):
+            for ln in stream:
+                buf[key].append(ln)
+                if key == "out" and on_line:
+                    on_line(ln)
+        threads = [threading.Thread(target=pump, args=(p.stdout, "out"), daemon=True),
+                   threading.Thread(target=pump, args=(p.stderr, "err"), daemon=True)]
+        for th in threads:
+            th.start()
         try:
-            out, err = p.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:  # sockseek is killed; keep what it printed so finished files still count
+            p.wait(timeout=timeout)
+            code = p.returncode
+        except subprocess.TimeoutExpired:  # killed; keep what it printed so finished files still count
             p.kill()
-            out, err = p.communicate()
-            return TIMED_OUT, out or "", err or ""
+            p.wait()
+            code = TIMED_OUT
         finally:
             _RUNNING.discard(p)
-        return p.returncode, out, err
+        for th in threads:
+            th.join(5)
+        return code, "".join(buf["out"]), "".join(buf["err"])
     return run
 
 
 def parse_json_arrays(text: str) -> list[list[dict]]:
     """sockseek prints one JSON array per search job, interleaved with nothing else on stdout."""
+    text = "".join(ln for ln in text.splitlines(keepends=True) if not ln.startswith('{"type":'))  # --progress-json events
     dec, pos, out = json.JSONDecoder(), 0, []
     while True:
         i = text.find("[", pos)
@@ -165,10 +181,20 @@ class Sockseek:
             for q in queries:
                 w.writerow([q.artist, q.title, q.album or ""])
         # --concurrent-jobs 1 keeps one result array per query, in input order.
+        extra = {}
+        if on_progress:  # one JSON array per finished query, one per line
+            done = [0]
+
+            def on_line(ln: str) -> None:
+                if ln.startswith('{"type":"track_state"'):  # a track's search finished
+                    done[0] += 1
+                    on_progress(done[0])
+            extra["on_line"] = on_line
         code, out, err = self.run([
             str(path), "--input-type=csv", "--artist-col", "Artist", "--title-col", "Title", "--album-col", "Album",
             "--length-tol=-1", "--concurrent-jobs", "1", "--search-timeout", "15000", "--print", "json-all",
-        ], timeout=60 * 60)
+            *(["--progress-json"] if on_progress else []),
+        ], timeout=60 * 60, **extra)
         self._keep_log("search", out, err)
         arrays = parse_json_arrays(out)
         if len(arrays) != len(queries):

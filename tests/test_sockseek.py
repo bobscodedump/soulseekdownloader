@@ -86,3 +86,20 @@ def test_timeout_keeps_finished_files_and_reports_the_rest():
     r = SearchResult("u", r"x\a.flac", 200, 1, None, True, 0.0)
     outs = Sockseek(lambda args, timeout=None: (124, "", ""), d).download([r], d / "out")
     assert not outs[0].succeeded and outs[0].failure == "timed out waiting for the peer"
+
+
+def test_runner_streams_stdout_lines_while_running():
+    import pathlib
+    import tempfile
+    import time
+    from djlib.sockseek import Query, Sockseek, subprocess_runner
+    d = pathlib.Path(tempfile.mkdtemp())
+    exe = d / "fake"
+    exe.write_text('#!/bin/sh\necho \'{"type":"track_state","data":{}}\'\nsleep 1\necho \'{"type":"track_state","data":{}}\'\necho "[]"\necho "[]"\n')
+    exe.chmod(0o755)
+    seen = []
+    t0 = time.time()
+    res = Sockseek(subprocess_runner(exe), d).search([Query("a", "x", None), Query("b", "y", None)],
+                                                    lambda n: seen.append((n, time.time() - t0)))
+    assert res == [[], []]
+    assert [n for n, _ in seen] == [1, 2] and seen[0][1] < 0.8 < seen[1][1]  # first count arrived before the end

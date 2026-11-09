@@ -52,6 +52,12 @@ class Report:
     plans: list[TrackPlan] = field(default_factory=list)
 
 
+def _progress(log: Callable[[str], None], total: int) -> Callable[[int], None]:
+    def on(n: int) -> None:
+        log(f"searched {n} of {total}")
+    return on
+
+
 def preflight(ss: Sockseek, is_nicotine_running: Callable[[], bool] = nicotine_running) -> str:
     if is_nicotine_running():
         raise PreflightError("Nicotine+ is running and uses the same Soulseek login. Quit it and try again.")
@@ -118,7 +124,7 @@ def run(
 
     # 2. Search once per track (base title: sockseek needs every search word to appear), then rank.
     s.commit()  # never hold the database write lock across a minutes-long search: it 500s every other action
-    results = ss.search([Query(t.artist, t.title, None) for t in todo]) if todo else []
+    results = ss.search([Query(t.artist, t.title, None) for t in todo], _progress(log, len(todo))) if todo else []
     plans = []
     for t, res in zip(todo, results):
         ok, dropped = rank(wanted(t), res)
