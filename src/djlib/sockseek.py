@@ -10,6 +10,7 @@ import csv
 import json
 import re
 import subprocess
+import threading
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime
@@ -60,14 +61,33 @@ class Runner(Protocol):
     def __call__(self, args: list[str], timeout: float | None = None) -> tuple[int, str, str]: ...
 
 
+_RUNNING: set[subprocess.Popen] = set()
+_CANCELLED = threading.Event()
+
+
+def cancel_running() -> int:
+    """Stop every sockseek process started by this app (the Stop button). Returns how many were stopped."""
+    _CANCELLED.set()
+    procs = list(_RUNNING)
+    for p in procs:
+        p.kill()
+    return len(procs)
+
+
 def subprocess_runner(binary: Path = SOCKSEEK) -> Runner:
     def run(args, timeout=None):
+        _CANCELLED.clear()
+        p = subprocess.Popen([str(binary), *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        _RUNNING.add(p)
         try:
-            p = subprocess.run([str(binary), *args], capture_output=True, text=True, timeout=timeout)
-        except subprocess.TimeoutExpired as e:  # sockseek is killed; keep what it printed so finished files still count
-            dec = lambda b: b.decode("utf-8", "replace") if isinstance(b, bytes) else (b or "")
-            return TIMED_OUT, dec(e.stdout), dec(e.stderr)
-        return p.returncode, p.stdout, p.stderr
+            out, err = p.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:  # sockseek is killed; keep what it printed so finished files still count
+            p.kill()
+            out, err = p.communicate()
+            return TIMED_OUT, out or "", err or ""
+        finally:
+            _RUNNING.discard(p)
+        return p.returncode, out, err
     return run
 
 

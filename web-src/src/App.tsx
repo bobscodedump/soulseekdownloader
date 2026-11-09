@@ -56,7 +56,8 @@ export default function App() {
           ))}
         </nav>
         <div className="jobpill" data-testid="job-pill">
-          {job ? <a href="#jobs"><span className="dot running" />{job.title}</a>
+          {job ? <><a href="#jobs"><span className="dot running" />{job.title}</a>
+                 <button className="stop" data-testid="stop-job" onClick={() => api.cancelJob(job.id).then(refresh)}>Stop</button></>
                : <span className="muted">{summary ? `${plural(summary.files, "file")} in library` : ""}</span>}
         </div>
       </header>

@@ -81,6 +81,7 @@ export const api = {
   setCrate: (id: number, crate: string) => req<{ crate: string }>(`/api/playlists/${id}`, json("PATCH", { crate })),
   download: (id: number, crate: string, dry_run: boolean) =>
     req<Job>(`/api/playlists/${id}/download`, json("POST", { crate, dry_run })),
+  cancelJob: (id: number) => req<{ ok: boolean }>(`/api/jobs/${id}/cancel`, { method: "POST" }),
   jobs: () => req<Job[]>("/api/jobs"),
   job: (id: number, after = 0) => req<Job>(`/api/jobs/${id}?after=${after}`),
   review: () => req<ReviewItem[]>("/api/review"),

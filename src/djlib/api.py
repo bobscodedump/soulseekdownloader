@@ -344,6 +344,14 @@ def create_app(Session_: sessionmaker[Session], cfg: Config) -> FastAPI:
         j = runner.jobs.get(jid) or _404("job")
         return j.view(after)
 
+    @app.post("/api/jobs/{jid}/cancel")
+    def cancel_job(jid: int):
+        if not runner.cancel(jid):
+            raise HTTPException(409, "that job is not running")
+        from .sockseek import cancel_running
+        cancel_running()  # kills the search/download in progress; the job then ends as "stopped"
+        return {"ok": True}
+
     @app.get("/api/settings")
     def get_settings():
         with Session_() as s:

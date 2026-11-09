@@ -238,3 +238,21 @@ def test_first_run_setup_installs_sockseek_and_saves_login(tmp_path):
     assert "username = dj_me" in text and "password = s3cret!" in text and "old" not in text
     assert "concurrent-jobs = 1" in text  # other settings survive
     assert stat.S_IMODE(conf.stat().st_mode) == 0o600
+
+
+def test_stop_button_ends_a_running_job(tmp_path):
+    import threading
+    lib = tmp_path / "DJ"
+    lib.mkdir()
+    cfg = Config(library_root=lib, data_dir=tmp_path / "data", rejected_dir=tmp_path / "r", background=False)
+    app = create_app(session_factory(tmp_path / "t.db"), cfg)
+    c = TestClient(app)
+    gate = threading.Event()
+    job = app.state.runner.submit("download", "slow", lambda log: (gate.wait(5), {})[1])
+    assert c.post(f"/api/jobs/{job.id}/cancel").json() == {"ok": True}
+    gate.set()
+    app.state.runner.wait(5)
+    v = c.get(f"/api/jobs/{job.id}").json()
+    assert v["state"] == "aborted" and v["result"]["error"] == "Stopped by you."
+    assert c.post(f"/api/jobs/{job.id}/cancel").status_code == 409  # already over
+    assert c.get("/api/summary").json()["current_job"] is None

@@ -20,6 +20,7 @@ class Job:
     result: dict = field(default_factory=dict)
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    cancelled: bool = False
 
     def view(self, after: int = 0) -> dict:
         return {"id": self.id, "kind": self.kind, "title": self.title, "state": self.state,
@@ -56,14 +57,26 @@ class JobRunner:
         job.state, job.started_at = "running", now()
         try:
             job.result = work(job.log.append) or {}
-            job.state = "finished"
+            job.state = "aborted" if job.cancelled else "finished"
+            if job.cancelled:
+                job.result = {**job.result, "error": "Stopped by you."}
         except Exception as e:  # surfaced to the UI; the app keeps running
             job.log.append(f"ERROR: {e}")
             job.log.extend(traceback.format_exc().splitlines()[-6:])
             job.state = "aborted" if e.__class__.__name__ == "PreflightError" else "failed"
             job.result = {"error": str(e)}
+            if job.cancelled:
+                job.state, job.result = "aborted", {"error": "Stopped by you."}
         finally:
             job.finished_at = now()
+
+    def cancel(self, jid: int) -> bool:
+        job = self.jobs.get(jid)
+        if not job or job.state not in ("queued", "running"):
+            return False
+        job.cancelled = True
+        job.log.append("Stopping…")
+        return True
 
     def wait(self, timeout: float = 30) -> None:
         if self._thread:
